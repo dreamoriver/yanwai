@@ -136,6 +136,11 @@ object ReplyDatabaseHistory {
 
     internal fun voiceText(record: VerifiedVoice): String? = runCatching {
         if (!voiceStillMatches(record)) return@runCatching null
+        voiceTextUnchecked(record)
+    }
+
+    /** 调用方已经确认过语音仍然有效时用这个，避免每轮轮询多两次全表查询。 */
+    internal fun voiceTextUnchecked(record: VerifiedVoice): String? = runCatching {
         query(record.db, "SELECT content FROM VoiceTransText WHERE msgId = ? AND cmsgId = ? LIMIT 1",
             arrayOf(record.source.id.toString(), record.source.fileToken)).use {
             if (it.moveToFirst()) it.getString(0)?.trim()?.takeIf(String::isNotBlank) else null

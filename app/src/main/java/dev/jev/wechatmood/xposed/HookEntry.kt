@@ -59,13 +59,18 @@ class HookEntry : IXposedHookLoadPackage {
         if (installed) return
         runCatching {
             MoodLog.init(context)
-            MoodLog.i("ENVIRONMENT\n${Diagnostics.environment(context)}")
             ModulePrefs.init(context)
-            MoodLog.i("微信主进程已加载模块 ${BuildConfig.VERSION_NAME}")
-            ModulePrefs.report("模块 ${BuildConfig.VERSION_NAME} 已加载，等待打开聊天")
-            ReplyDatabaseHistory.install(context.classLoader)
             MessageSniffer.install(context)
             installed = true
+            MoodLog.i("微信主进程已加载模块 ${BuildConfig.VERSION_NAME}")
+            // 环境采集、日志上报、WCDB 反射扫描都不参与首帧，挪出冷启动主线程。
+            Thread({
+                runCatching {
+                    MoodLog.i("ENVIRONMENT\n${Diagnostics.environment(context)}")
+                    ModulePrefs.report("模块 ${BuildConfig.VERSION_NAME} 已加载，等待打开聊天")
+                    ReplyDatabaseHistory.install(context.classLoader)
+                }.onFailure { MoodLog.e("HOOK_INIT_BACKGROUND_FAILED", it) }
+            }, "yanwai-init-bg").start()
         }.onFailure {
             XposedBridge.log("WeChatMood initialization failed: ${it.javaClass.name}")
             MoodLog.e("HOOK_INIT_FAILED", it)

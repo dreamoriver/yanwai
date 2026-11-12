@@ -39,10 +39,12 @@ object MessageSniffer {
     private var displayedTalker: String? = null
     private data class PendingCard(val observer: ViewTreeObserver, val listener: ViewTreeObserver.OnPreDrawListener)
     private val pendingCards = mutableMapOf<View, PendingCard>()
+    private var idleTicks = 0
     private val tick = object : Runnable {
         override fun run() {
             val activity = active.get() ?: return
             if (activity.isFinishing || activity.isDestroyed) return
+            val before = visibleKeys
             runCatching { scan(activity) }.onFailure {
                 visibleKeys = emptySet()
                 SignalAnalyzer.cancelAll()
@@ -51,7 +53,10 @@ object MessageSniffer {
                 report("读取当前页面失败：${it.javaClass.simpleName}")
                 ui?.showStatus("Jev · 页面读取失败，点击查看", emptyList())
             }
-            main.postDelayed(this, 700)
+            // 画面没变化就降频：700ms -> 1400ms，一旦消息集合变了立刻回到 700ms。
+            // 聊天页常驻是耗电大户，静止时没必要每 0.7 秒全树扫一遍。
+            idleTicks = if (visibleKeys != before) 0 else (idleTicks + 1).coerceAtMost(1)
+            main.postDelayed(this, 700L * (idleTicks + 1))
         }
     }
 

@@ -109,9 +109,15 @@ object NativeVoiceBridge {
             }
             val result = withTimeoutOrNull(30_000) {
                 var polls = 0
+                var delayMs = 300L
                 while (true) {
                     checkChat()
-                    check(withContext(Dispatchers.IO) { ReplyDatabaseHistory.voiceStillMatches(record) }) { "语音已删除或聊天账号已变化" }
+                    // 语音有效性每 3 轮才查一次；转写文本直接查，不再顺带重复校验。
+                    if (polls % 3 == 0) {
+                        check(withContext(Dispatchers.IO) { ReplyDatabaseHistory.voiceStillMatches(record) }) {
+                            "语音已删除或聊天账号已变化"
+                        }
+                    }
                     val state = withContext(Dispatchers.Main.immediate) { (contract.state.invoke(host, source.id) as Enum<*>).name }
                     if (state == "Transformed") {
                         val text = withContext(Dispatchers.Main.immediate) {
@@ -119,11 +125,13 @@ object NativeVoiceBridge {
                         }?.trim()
                         if (!text.isNullOrBlank()) return@withTimeoutOrNull text
                     }
-                    val stored = withContext(Dispatchers.IO) { ReplyDatabaseHistory.voiceText(record) }
+                    val stored = withContext(Dispatchers.IO) { ReplyDatabaseHistory.voiceTextUnchecked(record) }
                     if (!stored.isNullOrBlank() && state !in setOf("PreTransform", "Transforming")) return@withTimeoutOrNull stored
                     check(state != "NoTransform" || polls < 5) { "微信未能转写这条语音，可先播放确认文件可用后重试" }
                     polls++
-                    delay(300)
+                    // 300 -> 600 -> 900 -> 1200ms：30 秒内的轮询次数从 100 降到 30 出头。
+                    delay(delayMs)
+                    if (delayMs < 1200) delayMs += 300
                 }
                 @Suppress("UNREACHABLE_CODE") ""
             } ?: error("语音转写超时，请稍后重试")

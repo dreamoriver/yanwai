@@ -137,7 +137,7 @@ object ReplyDatabaseHistory {
     internal fun voiceText(record: VerifiedVoice): String? = runCatching {
         if (!voiceStillMatches(record)) return@runCatching null
         voiceTextUnchecked(record)
-    }
+    }.getOrNull()
 
     /** 调用方已经确认过语音仍然有效时用这个，避免每轮轮询多两次全表查询。 */
     internal fun voiceTextUnchecked(record: VerifiedVoice): String? = runCatching {

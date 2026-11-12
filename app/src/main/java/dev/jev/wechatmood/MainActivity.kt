@@ -382,29 +382,29 @@ class MainActivity : AppCompatActivity() {
                     dev.jev.wechatmood.core.ContextMessage("对方", "你是不是忘了周末吃饭的事？"),
                     dev.jev.wechatmood.core.ContextMessage("我", "记得，这次我来安排，明天把餐厅和时间告诉你。")))
                 val client = JevHttpClient()
-                val mood = ChatAnalysis.analyzeSuspending(sample, testedSettings.api.model,
-                    { payload -> client.exchangeSuspending(payload, testedSettings.api) })
-                if (!sameJevSettings(testedSettings.api)) {
+                val mood = ChatAnalysis.analyzeSuspending(sample, testedSettings.model,
+                    { payload -> client.exchangeSuspending(payload, testedSettings) })
+                if (!sameJevSettings(testedSettings)) {
                     return@launch
                 }
                 probeState = ProbeState.PASSED
                 // 只有检测通过才落盘，避免把刚好能用的旧配置换掉。
                 val saved = saveApiSettings()
-                if (saved) markProbePassed(testedSettings.api)
+                if (saved) markProbePassed(testedSettings)
                 showResult(if (saved) "JEV 检测通过\n${mood.detail}\n\n配置已保存。仅验证 JEV 连接；微信模块状态见首页。"
                 else "检测通过，但保存配置失败，请重试。", if (saved) StatusTone.SUCCESS else StatusTone.WARNING)
                 MoodLog.i("模型连接检测成功")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (!sameJevSettings(testedSettings.api)) {
+                if (!sameJevSettings(testedSettings)) {
                     return@launch
                 }
                 probeState = ProbeState.FAILED
                 showResult("检测失败\n${e.message}\n\n修正配置或检查网络后，点击「重试连接检测」。", StatusTone.ERROR)
                 MoodLog.e("模型连接检测失败：${e.message}")
             } finally {
-                if (!sameJevSettings(testedSettings.api)) {
+                if (!sameJevSettings(testedSettings)) {
                     probeState = ProbeState.UNTESTED
                     showResult("配置已变化，请重新检测。", StatusTone.WARNING)
                 }

@@ -305,6 +305,8 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
                 (activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
                     ?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
             }
+            // 已经写进聊天框，抽屉直接收起，把屏幕还给用户自己改和发。
+            runCatching { window.dismiss() }
             toast(if (previous.isNotBlank() && previous != text) "已填入，原草稿已存入剪贴板"
             else "已填入，发送前可以再改")
         }

@@ -47,7 +47,7 @@ object ReplyProtocol {
         """.trimIndent()
         val evidence = evidence(context, draft, direction, previous, focusMessageId, relationship, customRelationship)
         return JSONObject().put("model", settings.model).put("stream", false)
-            .put("max_tokens", 600).put("temperature", 0.9).put("messages", JSONArray()
+            .put("max_tokens", 1500).put("temperature", 0.9).put("messages", JSONArray()
             .put(JSONObject().put("role", "system").put("content", "$instructions\n\n$knowledge"))
             .put(JSONObject().put("role", "user").put("content", evidence.toString())))
     }
@@ -81,11 +81,17 @@ object ReplyProtocol {
         val root = JSONObject(body)
         check(!root.has("error"))
         val choice = root.getJSONArray("choices").getJSONObject(0)
-        check(choice.optString("finish_reason") == "stop")
+        val finish = choice.optString("finish_reason")
         val message = choice.getJSONObject("message")
         check(message.isNull("refusal") || message.optString("refusal").isBlank())
         val raw = message.getString("content").trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-        return JSONObject(raw)
+        val json = raw.substring(raw.indexOf('{').takeIf { it >= 0 } ?: 0).trim()
+        return runCatching { JSONObject(json) }.getOrElse { error ->
+            if (finish == "length") {
+                throw IllegalStateException("回复被截断（finish_reason=length），请重试或换输出上限更高的模型")
+            }
+            throw error
+        }
     }
 
     fun parse(body: String): ReplySuggestion = try {
@@ -97,5 +103,9 @@ object ReplyProtocol {
             (0 until replies.length()).map { (replies.get(it) as? String ?: error("Invalid reply part")).trim() }
         } else listOf((result.get("reply") as? String ?: error("Invalid reply")).trim())
         ReplySuggestion(parts, (result.opt("reason") as? String).orEmpty().trim().take(2000))
-    } catch (_: Exception) { throw IllegalStateException("模型未返回完整的回复建议，请重试或换一个支持指令的聊天模型") }
+    } catch (error: Exception) {
+        val detail = error.message.orEmpty()
+        throw IllegalStateException(
+            if (detail.contains("截断")) detail else "模型未返回完整的回复建议，请重试或换一个支持指令的聊天模型")
+    }
 }

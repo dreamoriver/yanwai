@@ -765,7 +765,10 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
             job = scope.launch {
                 try {
                     if (!verifyAccount()) { window.dismiss(); return@launch }
-                    val knowledge = withContext(Dispatchers.IO) { ReplyKnowledge.load(activity, relationship) }
+                    val knowledge = withContext(Dispatchers.IO) {
+                        ReplyKnowledge.loadFor(activity, relationship,
+                            current.messages.joinToString("\n") { it.text } + "\n" + baselineDraft + "\n" + notes)
+                    }
                     // Upload only the prepared evidence, after rechecking configuration, conversation and settings.
                     ensureActive()
                     if (!session.accepts(ticket, MessageSniffer.currentReplyTalker()) || !ownsDrawer() || !ModulePrefs.canGenerateReply || current.background != composition.background) return@launch

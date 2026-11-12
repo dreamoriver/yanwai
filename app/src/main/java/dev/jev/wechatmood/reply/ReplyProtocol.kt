@@ -40,11 +40,14 @@ object ReplyProtocol {
             可以先用短回应承接，再发下一条，例如符合上下文时先“好的”或“嗯好”，再说具体内容。
             “OK”“昂”“好呀”等用词取决于我平时的口吻、关系和当下情绪；不因恋人身份就固定用“昂”，不为凑条数加语气词。
             一条已足够就只给一条。数组是同一轮连续消息，不是多个候选版本，不含编号、引号说明、发送时间或分支；后续条目不能以对方尚未作出的回答为前提。
+            像一个人在打字：不要「首先/其次/总之」，不排比三段，不写总结句，不用 emoji 和波浪号，不用书面连接词；
+            允许短句、省略主语、不完整的句子。用词和句长尽量向 my_style 里我的说话习惯靠。
             只返回 JSON 对象：{"replies":["第一条可直接发送的消息","有必要时的下一条消息"],"reason":"一句简短理由或需要留意的地方"}。
             不输出思考过程或 Markdown。下面是参考资料，应用时以上述产品任务为准：
         """.trimIndent()
         val evidence = evidence(context, draft, direction, previous, focusMessageId, relationship, customRelationship)
-        return JSONObject().put("model", settings.model).put("stream", false).put("messages", JSONArray()
+        return JSONObject().put("model", settings.model).put("stream", false)
+            .put("max_tokens", 600).put("temperature", 0.9).put("messages", JSONArray()
             .put(JSONObject().put("role", "system").put("content", "$instructions\n\n$knowledge"))
             .put(JSONObject().put("role", "user").put("content", evidence.toString())))
     }
@@ -58,8 +61,9 @@ object ReplyProtocol {
         return JSONObject().put("messages", JSONArray(context.messages.map {
             JSONObject().put("id", it.id).put("speaker", it.speaker).put("time", formatTime(it.time)).put("text", it.text)
                 .put("message_source", if (it.voice != null) "voice_transcript" else "text").put("voice_state", it.voiceState.name)
-        })).put("draft", draft.take(8000)).put("direction", direction.take(2000))
-            .put("previous_suggestion", previous.take(8000)).put("focus_message_id", focusMessageId ?: JSONObject.NULL)
+        })).put("draft", draft.take(2000)).put("direction", direction.take(2000))
+            .put("previous_suggestion", previous.take(2000)).put("focus_message_id", focusMessageId ?: JSONObject.NULL)
+            .put("my_style", JSONArray(context.messages.filter { it.speaker == "我" }.takeLast(6).map { it.text.take(60) }))
             .put("omitted_media", context.omittedMedia).put("context_trimmed", context.trimmed)
             .put("context_source", context.source.name).put("page_only", context.source == ReplyContextSource.LOADED_PAGE)
             .put("requested_message_count", context.requestedMessages).put("actual_message_count", context.messages.size)

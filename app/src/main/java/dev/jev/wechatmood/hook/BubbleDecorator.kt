@@ -142,7 +142,7 @@ object BubbleDecorator {
             }
         }
         row.addOnAttachStateChangeListener(detach)
-        return Card(key, card, target, branch, assignedId, detach)
+        return Card(key, null, card, target, branch, assignedId, detach)
     }
 
     private fun findBubble(root: ViewGroup): View? {

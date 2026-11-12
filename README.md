@@ -1,3 +1,13 @@
+> ## 这是自用构建仓库，不是原项目发布页
+>
+> - 源码基于 [YIRC99/yanwai](https://github.com/YIRC99/yanwai)
+> - **当前版本：2.7.5（versionCode 69）**
+> - **改动清单：[CHANGELOG.md](CHANGELOG.md)｜安装包：[Releases](../../releases)**
+> - 附件名形如 `yanwai-2.7.5-69.apk`，覆盖安装即可，不要卸载
+> - 原仓库未声明开源许可证，安装包仅自己使用，不对外分发
+
+---
+
 <div align="center">
 
 # 言外 · Yanwai

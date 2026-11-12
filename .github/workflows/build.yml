@@ -52,6 +52,13 @@ jobs:
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Check changelog
+        run: |
+          grep -q "## ${{ steps.ver.outputs.name }}" CHANGELOG.md || {
+            echo "::error::CHANGELOG.md 缺少 ## ${{ steps.ver.outputs.name }} 段落，Release 说明会挂旧内容";
+            exit 1;
+          }
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon -Pkotlin.compiler.execution.strategy=in-process
 

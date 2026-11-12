@@ -1,0 +1,90 @@
+package dev.jev.wechatmood.core
+
+import org.junit.Assert.*
+import org.junit.Test
+
+class ManualAnalysisTest {
+    private val message = AnalysisInput("好的", "alice", messageId = 42)
+
+    @Test fun `manual selection made during account lookup follows the verified account only`() {
+        val manual = ManualAnalysis()
+        val waiting = message.copy(accountScope = "pending:screen")
+        manual.select(waiting)
+        val verified = message.copy(accountScope = "verified-account")
+        manual.resolveAccount(verified, "pending:screen")
+        assertNotNull(manual.selectedInput(verified))
+        assertNull(manual.selectedInput(waiting))
+        assertNull(manual.selectedInput(verified.copy(accountScope = "other-account")))
+    }
+
+    @Test fun `manual choice survives pending then memory fallback then verified account`() {
+        val manual = ManualAnalysis()
+        val waiting = message.copy(accountScope = "pending:screen")
+        manual.select(waiting)
+        val fallback = message.copy(accountScope = "memory:screen")
+        manual.resolveAccount(fallback, waiting.accountScope)
+        assertNotNull(manual.selectedInput(fallback))
+        val verified = message.copy(accountScope = "verified")
+        manual.resolveAccount(verified, waiting.accountScope)
+        manual.resolveAccount(verified, fallback.accountScope)
+        assertNotNull(manual.selectedInput(verified))
+        assertNull(manual.selectedInput(fallback))
+    }
+
+    @Test fun `closing chat switch clears all its manual choices and allows a fresh manual selection`() {
+        val manual = ManualAnalysis()
+        val second = message.copy(messageId = 43)
+        val group = message.copy(talker = "group@chatroom")
+        val chats = ConversationSwitches(emptySet()) { true }
+        listOf(message, second, group).forEach { assertTrue(manual.select(it)) }
+        assertTrue(chats.setEnabled(message.talker, true))
+        assertTrue(manual.allows(message, chats.isEnabled(message.talker)))
+        assertTrue(chats.setEnabled(message.talker, false))
+        manual.clearConversation(message.talker)
+
+        assertFalse(manual.allows(message, chats.isEnabled(message.talker)))
+        assertFalse(manual.allows(second, false))
+        assertNull(manual.selectedInput(message))
+        assertTrue(manual.allows(group, false))
+        assertTrue(manual.select(message))
+        assertTrue(manual.allows(message, false))
+        assertFalse(manual.allows(second, false))
+        assertFalse(chats.isEnabled(message.talker))
+    }
+
+    @Test fun `manual choice authorizes only selected message without saving chat opt in`() {
+        val chats = ConversationSwitches(emptySet()) { error("Manual analysis must not save switches") }
+        val manual = ManualAnalysis()
+        assertFalse(manual.allows(message, chats.isEnabled(message.talker)))
+        assertTrue(manual.select(message))
+        assertTrue(manual.allows(message, chats.isEnabled(message.talker)))
+        assertFalse(chats.isEnabled(message.talker))
+        assertFalse(manual.allows(message.copy(messageId = 43), false))
+        assertFalse(manual.allows(message.copy(talker = "group@chatroom"), false))
+        assertTrue(manual.allows(message.copy(messageId = 43), true))
+    }
+
+    @Test fun `returning to a message preserves its chosen input despite loaded context changes`() {
+        val manual = ManualAnalysis()
+        val chosen = message.copy(context = listOf(ContextMessage("我", "明天见？")))
+        manual.select(chosen)
+        assertEquals(chosen, manual.selectedInput(message))
+        manual.select(message)
+        assertEquals(chosen.key, manual.selectedInput(message)?.key)
+        assertNull(manual.selectedInput(message.copy(text = "变了")))
+        assertNull(ManualAnalysis().selectedInput(chosen))
+    }
+
+    @Test fun `multiple selections stay independent and invalid identities fail closed`() {
+        val manual = ManualAnalysis()
+        assertTrue(manual.select(message))
+        assertTrue(manual.select(message.copy(messageId = 43)))
+        assertTrue(manual.allows(message, false))
+        assertTrue(manual.allows(message.copy(messageId = 43), false))
+        for (invalid in listOf(message.copy(messageId = 0), message.copy(talker = ""),
+            message.copy(text = " "), message.copy(text = "字".repeat(1001)))) {
+            assertFalse(manual.select(invalid))
+            assertNull(manual.selectedInput(invalid))
+        }
+    }
+}

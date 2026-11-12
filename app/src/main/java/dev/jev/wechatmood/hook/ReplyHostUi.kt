@@ -315,12 +315,12 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
             composition.selectedText?.let { text ->
                 (activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
                     .setPrimaryClip(ClipData.newPlainText("言外回复建议", text))
-                toast("已复制第 ${composition.selectedPart + 1} 条")
+                toast("已复制第 ${composition.selectedPart + 1} 个方案")
             }
         }
         val footerActions = LinearLayout(activity).apply { setPadding(0, dp(10), 0, 0) }
-        footerActions.addView(fill, LinearLayout.LayoutParams(0, -2, 1f))
         footerActions.addView(copy, LinearLayout.LayoutParams(0, -2, 1f))
+        footerActions.addView(fill, LinearLayout.LayoutParams(0, -2, 1f))
         body.addView(footerActions)
         val footerHint = theme.label("填入后可自由修改，发送永远由你点", 11f, theme.muted).apply {
             gravity = Gravity.CENTER; setPadding(0, dp(4), 0, 0)
@@ -446,17 +446,17 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
             val batch = result?.topics
             topicTitle.text = batch?.current?.title.orEmpty()
             topicTitle.visibility = if (batch == null) View.GONE else View.VISIBLE
-            val kind = if (batch == null) "${result?.suggestion?.parts?.size ?: 0} 条建议" else "话题 ${batch.shownCount} / ${batch.items.size}"
+            val kind = if (batch == null) "${result?.suggestion?.parts?.size ?: 0} 个方案" else "话题 ${batch.shownCount} / ${batch.items.size}"
             replyTitle.text = result?.let { "${it.relationship.displayLabel(it.customRelationship)} · $kind${if (!composition.canUse) "（上次结果）" else ""} · 查看依据 ›" }.orEmpty()
             result?.suggestion?.parts?.forEachIndexed { index, text ->
                 val selected = composition.selectedPart == index
                 val row = LinearLayout(activity).apply {
                     orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(8)); minimumHeight = dp(48)
                     background = theme.shape(if (selected) theme.soft else theme.card, 12, if (selected) theme.accent else theme.border)
-                    addView(theme.label("${index + 1} / ${result.suggestion.parts.size}${if (selected) " · 已选" else " · 点选"}", 12f, theme.muted))
+                    addView(theme.label("候选 ${index + 1} / ${result.suggestion.parts.size}${if (selected) " · 已选" else " · 点选"}", 12f, theme.muted))
                     addView(theme.label(text, 16f).apply { setPadding(0, dp(3), 0, 0) })
                     isClickable = true; isFocusable = true
-                    contentDescription = "第 ${index + 1} 条，共 ${result.suggestion.parts.size} 条${if (selected) "，已选" else ""}，$text"
+                    contentDescription = "第 ${index + 1} 个方案，共 ${result.suggestion.parts.size} 个${if (selected) "，已选" else ""}，$text"
                     setOnClickListener { composition.select(index); renderParts(); controls(busy) }
                 }
                 parts.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })

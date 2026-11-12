@@ -5,6 +5,9 @@ on:
   push:
     branches: ["**"]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -40,13 +43,48 @@ jobs:
         with:
           gradle-version: "8.11.1"
 
+      - name: Read version
+        id: ver
+        run: |
+          VERSION=$(sed -n 's/^versionName=//p' version.properties)
+          CODE=$(sed -n 's/^versionCode=//p' version.properties)
+          echo "name=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon -Pkotlin.compiler.execution.strategy=in-process
 
-      - name: Upload APK
+      - name: Rename APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk \
+             "dist/yanwai-${{ steps.ver.outputs.name }}-${{ steps.ver.outputs.code }}.apk"
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: yanwai-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: yanwai-${{ steps.ver.outputs.name }}
+          path: dist/*.apk
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90
+
+      - name: Check existing tag
+        id: tag
+        run: |
+          if git ls-remote --tags origin "refs/tags/${{ steps.ver.outputs.tag }}" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish release
+        if: steps.tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: 言外 ${{ steps.ver.outputs.name }}
+          body_path: CHANGELOG.md
+          files: dist/*.apk
+          draft: false
+          prerelease: false

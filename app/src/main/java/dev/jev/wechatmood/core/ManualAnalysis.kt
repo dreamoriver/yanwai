@@ -3,6 +3,20 @@ package dev.jev.wechatmood.core
 /** Process-only choices for individual incoming text messages. */
 class ManualAnalysis {
     private val selected = java.util.concurrent.ConcurrentHashMap<String, AnalysisInput>()
+    /** 用户主动收起的卡片；只存在进程内存，重启微信或重新长按会恢复。 */
+    private val hidden = java.util.concurrent.ConcurrentHashMap<String, AnalysisInput>()
+
+    fun hide(input: AnalysisInput): Boolean {
+        val identity = identity(input) ?: return false
+        hidden[identity] = input
+        return true
+    }
+
+    fun reveal(input: AnalysisInput) {
+        identity(input)?.let(hidden::remove)
+    }
+
+    fun isHidden(input: AnalysisInput): Boolean = identity(input)?.let(hidden::containsKey) ?: false
 
     fun select(input: AnalysisInput): Boolean {
         val identity = identity(input) ?: return false
@@ -22,6 +36,7 @@ class ManualAnalysis {
 
     fun clearConversation(talker: String) {
         selected.entries.removeAll { it.value.talker == talker }
+        hidden.entries.removeAll { it.value.talker == talker }
     }
 
     fun allows(input: AnalysisInput, chatEnabled: Boolean): Boolean =

@@ -291,16 +291,38 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
         results.addView(resultActions); results.addView(reason)
         scroll.addView(results); body.addView(scroll, LinearLayout.LayoutParams(-1, -2, 1f))
         body.addView(line(), LinearLayout.LayoutParams(-1, dp(1).coerceAtLeast(1)))
-        val copy = action("复制这条", primary = true) {
+        fun fillIntoEditor(text: String) {
+            val input = editor() ?: run { toast("请先切换到文字输入"); return }
+            val previous = input.text?.toString().orEmpty()
+            if (previous.isNotBlank() && previous != text) {
+                (activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                    .setPrimaryClip(ClipData.newPlainText("言外原草稿", previous))
+            }
+            input.setText(text)
+            input.setSelection(text.length)
+            input.requestFocus()
+            runCatching {
+                (activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
+                    ?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+            }
+            toast(if (previous.isNotBlank() && previous != text) "已填入，原草稿已存入剪贴板"
+            else "已填入，发送前可以再改")
+        }
+        val fill = action("填入聊天框", primary = true) {
+            composition.selectedText?.let { fillIntoEditor(it) }
+        }
+        val copy = action("复制这条", quiet = true) {
             composition.selectedText?.let { text ->
                 (activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
                     .setPrimaryClip(ClipData.newPlainText("言外回复建议", text))
-                toast("已复制第 ${composition.selectedPart + 1} 条，请自行粘贴发送")
+                toast("已复制第 ${composition.selectedPart + 1} 条")
             }
         }
         val footerActions = LinearLayout(activity).apply { setPadding(0, dp(10), 0, 0) }
-        footerActions.addView(copy, LinearLayout.LayoutParams(-1, -2)); body.addView(footerActions)
-        val footerHint = theme.label("复制后，请自行粘贴到聊天框发送", 11f, theme.muted).apply {
+        footerActions.addView(fill, LinearLayout.LayoutParams(0, -2, 1f))
+        footerActions.addView(copy, LinearLayout.LayoutParams(0, -2, 1f))
+        body.addView(footerActions)
+        val footerHint = theme.label("填入后可自由修改，发送永远由你点", 11f, theme.muted).apply {
             gravity = Gravity.CENTER; setPadding(0, dp(4), 0, 0)
         }
         body.addView(footerHint)
@@ -393,12 +415,13 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
             historyPicker.isEnabled = !generating
             historyPicker.text = "参考最近 ${composition.historyLimit} 条 ▾"
             historyPicker.contentDescription = "选择参考聊天消息条数，当前最近 ${composition.historyLimit} 条"
-            copy.isEnabled = !generating && !reading && composition.canUse
+            fill.isEnabled = !generating && !reading && composition.canUse
+            copy.isEnabled = fill.isEnabled
             copy.text = "复制这条"
             footerActions.visibility = if (composition.result == null) View.GONE else View.VISIBLE
             footerHint.visibility = footerActions.visibility
             footerHint.text = if (!composition.canUse) "身份、背景或参考范围已改变，请重新生成"
-                else "复制后，请自行粘贴到聊天框发送"
+                else "填入后可自由修改，发送永远由你点"
             state.visibility = if (state.text.isBlank()) View.GONE else View.VISIBLE
             if (window.isShowing) fitWindow()
         }

@@ -25,6 +25,7 @@ import java.util.WeakHashMap
 
 /** Jev uses loaded rows. Manual LLM replies capture live identity here, then read history separately. */
 object MessageSniffer {
+    private val loggedFailures: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val main = Handler(Looper.getMainLooper())
     private data class BoundMessage(val talker: String, val input: AnalysisInput?,
         val adapter: WeakReference<Any>? = null, val position: Int = -1, val metadata: MessageMetadata? = null)
@@ -454,7 +455,14 @@ object MessageSniffer {
                     ?.takeIf(ModulePrefs::shouldDisplay)
                 if (!BubbleDecorator.show(row, input) && input != null) unsupported++
             }
-                .onFailure { BubbleDecorator.clear(row); MoodLog.w("气泡绘制失败：${it.javaClass.simpleName}") }
+                .onFailure {
+                    BubbleDecorator.clear(row)
+                    // 700ms 一轮，同样错误只记一次，避免主线程同步写盘刷爆日志。
+                    val signature = "draw:${it.javaClass.simpleName}"
+                    if (loggedFailures.size < 64 && loggedFailures.add(signature)) {
+                        MoodLog.w("气泡绘制失败：${it.javaClass.simpleName}")
+                    }
+                }
         }
         val status = when {
             talker == null -> "暂未识别当前聊天，收到消息后重试"

@@ -1,5 +1,6 @@
 package dev.jev.wechatmood.reply
 
+import dev.jev.wechatmood.core.HttpClients
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
@@ -8,9 +9,9 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resumeWithException
 
-class ReplyHttpClient(private val client: Call.Factory = OkHttpClient.Builder()
-    .connectTimeout(15, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS)
-    .followRedirects(false).followSslRedirects(false).build()) {
+class ReplyHttpClient(private val client: Call.Factory = HttpClients.shared.newBuilder()
+    .connectTimeout(15, TimeUnit.SECONDS).writeTimeout(30, TimeUnit.SECONDS)
+    .readTimeout(90, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS).build()) {
     suspend fun generate(settings: ReplySettings, context: ReplyContext, draft: String, direction: String,
         knowledge: String, previous: String = "", focusMessageId: Long? = null,
         relationship: ReplyRelationship = ReplyRelationship.UNSPECIFIED, customRelationship: String = ""): ReplySuggestion {

@@ -311,7 +311,7 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
         val fill = action("填入聊天框", primary = true) {
             composition.selectedText?.let { fillIntoEditor(it) }
         }
-        val copy = action("复制这条", quiet = true) {
+        val copy = action("复制这条") {
             composition.selectedText?.let { text ->
                 (activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
                     .setPrimaryClip(ClipData.newPlainText("言外回复建议", text))

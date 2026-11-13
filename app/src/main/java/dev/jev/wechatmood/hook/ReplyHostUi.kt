@@ -714,8 +714,8 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
                 }
                 menu.add(0, -1, 101, "自定义…").isChecked = composition.historyLimit !in ReplyHistorySelection.OPTIONS
                 menu.setGroupCheckable(0, true, true)
-                reference.context?.let { menu.add(1, 1, 102, "查看已读取的 ${it.messages.size} 条消息") }
-                menu.add(1, 2, 103, "重新读取")
+                reference.context?.let { menu.add(1, 1, 102, "查看参考内容（${it.messages.size} 条）") }
+                menu.add(1, 2, 103, "重新读取聊天记录")
                 setOnMenuItemClickListener { item ->
                     if (ownsDrawer() && !busy) when {
                         item.groupId == 1 && item.itemId == 1 -> reference.context?.let(::showEvidence)

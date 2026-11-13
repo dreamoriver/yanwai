@@ -149,6 +149,7 @@ object ReplyDatabaseHistory {
 
     suspend fun load(loaded: ReplyContext, limit: Int = ReplyContext.MAX_MESSAGES): ReplyContext = withContext(Dispatchers.IO) {
         require(limit in 1..ReplyContext.MAX_MESSAGES)
+        val startedAt = android.os.SystemClock.elapsedRealtime()
         val active = coroutineContext
         val databases = synchronized(this@ReplyDatabaseHistory) { handles.mapNotNull { it.get() } }
         val sources = databases.map { db -> ReplyHistoryQuery { sql, args ->
@@ -165,7 +166,8 @@ object ReplyDatabaseHistory {
             }
         } }
         ReplyHistoryReader.read(loaded, sources, limit) { active.ensureActive() }.also {
-            MoodLog.i("REPLY_HISTORY_RESULT requested=$limit handles=${databases.size} source=${it.source} count=${it.messages.size} trimmed=${it.trimmed}")
+            MoodLog.i("REPLY_HISTORY_RESULT requested=$limit handles=${databases.size} source=${it.source} " +
+                "count=${it.messages.size} trimmed=${it.trimmed} took=${android.os.SystemClock.elapsedRealtime() - startedAt}ms")
         }
     }
 }

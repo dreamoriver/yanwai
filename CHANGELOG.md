@@ -3,6 +3,13 @@
 基于 [YIRC99/yanwai](https://github.com/YIRC99/yanwai) 的本地改动，仅供自己使用。
 原仓库未声明开源许可证，因此不对外分发安装包。
 
+## 2.8.3
+
+语音转写适配微信 8.0.7x
+- submit 从 4 个参数变成 5 个（对象, boolean, int, int, int），匹配改为兼容两者并优先参数多的
+- 调用统一走 submitMessage，按实际参数个数拼参
+- 依据：日志里实际签名是 w0(f9,boolean,int,int,int)=void
+
 ## 2.8.2
 
 - 语音转写契约解析失败时，把 TransformComponent 的实际方法签名写进日志（不含聊天内容），

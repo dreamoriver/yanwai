@@ -112,7 +112,7 @@ object NativeVoiceBridge {
                 checkChat()
                 val state = (contract.state.invoke(host, source.id) as Enum<*>).name
                 // An existing host task is awaited, never toggled off by another consumer.
-                if (state == "NoTransform") contract.submit.invoke(host, record.message, false, -1, 0)
+                if (state == "NoTransform") contract.submitMessage(host, record.message)
             }
             val result = withTimeoutOrNull(30_000) {
                 var polls = 0

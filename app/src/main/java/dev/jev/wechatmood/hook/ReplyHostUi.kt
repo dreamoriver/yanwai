@@ -111,8 +111,9 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
             catch (error: Exception) {
                 MoodLog.e("REPLY_SETTINGS_READ_FAILED", error)
                 if (epoch == ReplyDatabaseHistory.pendingAccountScope() && talker == selectedTalker) {
+                    // 不再弹「去开自启动」的对话框；本地已有回退，失败只记日志。
                     if (error is dev.jev.wechatmood.core.SettingsConnectionUnavailableException || !ModulePrefs.bridgeAvailable)
-                        dev.jev.wechatmood.core.Diagnostics.showSettingsConnectionHelp(activity)
+                        dev.jev.wechatmood.core.MoodLog.w("REPLY_OPEN_WITHOUT_BRIDGE 未能连接言外，已按本地缓存继续")
                     else toast("回复设置读取失败，请重试；长按分析开关可导出日志")
                 }
             }
@@ -305,10 +306,8 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
                 (activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
                     ?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
             }
-            // 已经写进聊天框，抽屉直接收起，把屏幕还给用户自己改和发。
+            // 已经写进聊天框，抽屉直接收起，把屏幕还给用户自己改和发；不再弹提示。
             runCatching { window.dismiss() }
-            toast(if (previous.isNotBlank() && previous != text) "已填入，原草稿已存入剪贴板"
-            else "已填入，发送前可以再改")
         }
         val fill = action("填入聊天框", primary = true) {
             composition.selectedText?.let { fillIntoEditor(it) }

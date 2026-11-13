@@ -31,6 +31,7 @@ object ModulePrefs {
     private val retryDelays = longArrayOf(2_000L, 5_000L, 15_000L, 60_000L)
     private val retryLock = Any()
     @Volatile private var retryStep = 0
+    @Volatile private var warmScheduled = false
     @Volatile var lastBridgeError: String? = null
         private set
     private var lastFailureSignature = ""
@@ -53,6 +54,30 @@ object ModulePrefs {
         lastBridgeError = null
         lastFailureSignature = ""
         synchronized(retryLock) { retryStep = 0 }
+        warmReplySnapshot()
+    }
+
+    /**
+     * 连上一次成功就把角色列表留在微信进程里。
+     * 否则「帮我回」要等用户主动打开抽屉才写缓存，冷启动时就没得回退。
+     */
+    private fun warmReplySnapshot() {
+        if (warmScheduled) return
+        val ctx = context ?: return
+        val generation = session.current?.generation ?: return
+        warmScheduled = true
+        bridgeWorker.execute {
+            runCatching {
+                val response = SettingsTransport.call(ctx, "reply_role_list", null,
+                    Bundle().apply { putString(SettingsProvider.KEY_GENERATION, generation) })
+                val roles = response?.getStringArrayList("roles") ?: return@runCatching
+                ReplySnapshotCache.saveRoles(ctx, roles)
+                MoodLog.i("REPLY_ROLES_WARMED count=${roles.size}")
+            }.onFailure {
+                warmScheduled = false
+                MoodLog.w("REPLY_ROLES_WARM_FAILED ${it.javaClass.simpleName}")
+            }
+        }
     }
     fun init(context: Context) {
         val app = context.applicationContext ?: context

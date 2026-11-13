@@ -56,9 +56,10 @@ object ReplyIdentityBridge {
         val app = context.applicationContext
         val generation = generation()
         worker.execute {
-            val result = runCatching { readBackground(app, key, generation) }.recoverCatching { error ->
+            val result = runCatching { readBackground(app, key, generation) }.recoverCatching {
+                // 没有缓存也降级成「无背景」，不让抽屉打不开。
                 ReplySnapshotCache.load(app, key.value, "bg")
-                    ?.let { runCatching { ContactBackground.decode(it) }.getOrNull() } ?: throw error
+                    ?.let { runCatching { ContactBackground.decode(it) }.getOrNull() } ?: ContactBackground()
             }
             if (c.isActive) c.resumeWith(result)
         }
@@ -92,8 +93,8 @@ object ReplyIdentityBridge {
                 requireNotNull(response?.getStringArrayList("roles")).also {
                     ReplySnapshotCache.saveRoles(app, it)
                 }.map(ReplyRole::decode)
-            }.recoverCatching { error ->
-                ReplySnapshotCache.loadRoles(app)?.map(ReplyRole::decode) ?: throw error
+            }.recoverCatching {
+                ReplySnapshotCache.loadRoles(app)?.map(ReplyRole::decode) ?: emptyList()
             }
             if (c.isActive) c.resumeWith(result)
         }
@@ -173,7 +174,8 @@ object ReplyIdentityBridge {
             }, { error ->
                 val cached = ReplySnapshotCache.load(app, key.value, "id")
                     ?.let { runCatching { ReplyIdentitySetting.decode(it) }.getOrNull() }
-                if (cached != null) continuation.resume(cached) else continuation.resumeWithException(error)
+                // 读不到就按「未指定身份」继续，用户仍可在抽屉里手动选。
+                continuation.resume(cached ?: ReplyIdentitySetting())
             })
         }
     }

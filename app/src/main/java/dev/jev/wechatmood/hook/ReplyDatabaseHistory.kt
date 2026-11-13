@@ -167,7 +167,8 @@ object ReplyDatabaseHistory {
         } }
         ReplyHistoryReader.read(loaded, sources, limit) { active.ensureActive() }.also {
             MoodLog.i("REPLY_HISTORY_RESULT requested=$limit handles=${databases.size} source=${it.source} " +
-                "count=${it.messages.size} trimmed=${it.trimmed} took=${android.os.SystemClock.elapsedRealtime() - startedAt}ms")
+                "count=${it.messages.size} trimmed=${it.trimmed} took=${android.os.SystemClock.elapsedRealtime() - startedAt}ms " +
+                "quoted=${it.messages.count { message -> message.text.startsWith("【引用") }}")
         }
     }
 }

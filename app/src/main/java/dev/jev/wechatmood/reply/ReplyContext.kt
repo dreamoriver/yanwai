@@ -35,7 +35,9 @@ data class ReplyContext(val talker: String, val messages: List<ReplyMessage>, va
         fun collect(talker: String, records: List<MessageMetadata>, maxMessages: Int = MAX_MESSAGES): ReplyContext {
             require(maxMessages in 1..MAX_MESSAGES)
             val same = records.filter { it.talker == talker }.distinctBy { if (it.messageId > 0) "id:${it.messageId}" else "${it.createdAt}:${it.isSend}:${it.content}" }
-            val eligible = same.filter { it.isSend in 0..1 && (it.plainText() != null || it.voiceSource() != null) }
+            // 引用消息即使解析不出正文也要保留：丢掉它会让模型对着上下文里别的消息作答。
+            val eligible = same.filter { it.isSend in 0..1 &&
+                (it.type == 49 || it.type == 822083633 || it.plainText() != null || it.voiceSource() != null) }
             val text = eligible.takeLast(maxMessages)
             var budget = MAX_CHARACTERS
             var trimmed = eligible.size > maxMessages
@@ -46,13 +48,15 @@ data class ReplyContext(val talker: String, val messages: List<ReplyMessage>, va
                     record.type == 34 -> VoiceText.WAITING
                     record.type == 49 || record.type == 822083633 -> {
                         // 引用消息要把「被引用的原文」和「这次新写的话」一起给模型，
-                        // 只留其中一边很容易答非所问。
+                        // 只留其中一边很容易答非所问；解析失败也要留占位，不能整条丢掉。
                         val own = record.plainText().orEmpty()
                         val quoted = record.quotedMessage()
                         val quotedText = quoted?.text?.takeIf { it.isNotBlank() }?.take(200)
-                        if (quotedText != null)
-                            "【引用${quoted.displayName?.take(32).orEmpty()}：$quotedText】$own"
-                        else own
+                        when {
+                            quotedText != null -> "【引用${quoted.displayName?.take(32).orEmpty()}：$quotedText】$own"
+                            own.isNotBlank() -> own
+                            else -> "【引用消息，内容未能解析】"
+                        }
                     }
                     record.isSend == 0 && talker.endsWith("@chatroom") && record.content.contains(":\n") ->
                         record.content.substringAfter(":\n")

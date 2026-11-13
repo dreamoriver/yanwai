@@ -10,11 +10,8 @@ data class VoiceHostContract(val submit: Method, val state: Method, val text: Me
 
     /** 微信 8.0.7x 起 submit 从 4 个参数变成 5 个（多一个 int），按实际个数拼参数。 */
     fun submitMessage(host: Any, message: Any) {
-        val args: Array<Any?> = when (submit.parameterCount) {
-            5 -> arrayOf(host, message, false, -1, 0, 0)
-            else -> arrayOf(host, message, false, -1, 0)
-        }
-        submit.invoke(*args)
+        if (submit.parameterCount >= 5) submit.invoke(host, message, false, -1, 0, 0)
+        else submit.invoke(host, message, false, -1, 0)
     }
     companion object {
         fun resolve(component: Class<*>, chat: Class<*>): VoiceHostContract? = runCatching {

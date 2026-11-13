@@ -43,7 +43,16 @@ data class ReplyContext(val talker: String, val messages: List<ReplyMessage>, va
                 // 引用消息的 content 是 XML，取解析后的文本，别把标签塞给模型。
                 val body = when {
                     record.type == 34 -> VoiceText.WAITING
-                    record.type == 49 || record.type == 822083633 -> record.plainText().orEmpty()
+                    record.type == 49 || record.type == 822083633 -> {
+                        // 引用消息要把「被引用的原文」和「这次新写的话」一起给模型，
+                        // 只留其中一边很容易答非所问。
+                        val own = record.plainText().orEmpty()
+                        val quoted = record.quotedMessage()
+                        val quotedText = quoted?.text?.takeIf { it.isNotBlank() }?.take(200)
+                        if (quotedText != null)
+                            "【引用${quoted.displayName?.take(32).orEmpty()}：$quotedText】$own"
+                        else own
+                    }
                     record.isSend == 0 && talker.endsWith("@chatroom") && record.content.contains(":\n") ->
                         record.content.substringAfter(":\n")
                     else -> record.content

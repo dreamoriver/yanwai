@@ -34,15 +34,20 @@ data class ReplyContext(val talker: String, val messages: List<ReplyMessage>, va
         fun collect(talker: String, records: List<MessageMetadata>, maxMessages: Int = MAX_MESSAGES): ReplyContext {
             require(maxMessages in 1..MAX_MESSAGES)
             val same = records.filter { it.talker == talker }.distinctBy { if (it.messageId > 0) "id:${it.messageId}" else "${it.createdAt}:${it.isSend}:${it.content}" }
-            val eligible = same.filter { it.isSend in 0..1 && (it.type == 1 && it.content.isNotBlank() || it.voiceSource() != null) }
+            val eligible = same.filter { it.isSend in 0..1 && (it.plainText() != null || it.voiceSource() != null) }
             val text = eligible.takeLast(maxMessages)
             var budget = MAX_CHARACTERS
             var trimmed = eligible.size > maxMessages
             val selected = text.asReversed().mapNotNull { record ->
                 if (budget <= 0) { trimmed = true; return@mapNotNull null }
-                val body = if (record.type == 34) VoiceText.WAITING
-                    else if (record.isSend == 0 && talker.endsWith("@chatroom") && record.content.contains(":\n"))
-                    record.content.substringAfter(":\n") else record.content
+                // 引用消息的 content 是 XML，取解析后的文本，别把标签塞给模型。
+                val body = when {
+                    record.type == 34 -> VoiceText.WAITING
+                    record.type == 49 || record.type == 822083633 -> record.plainText().orEmpty()
+                    record.isSend == 0 && talker.endsWith("@chatroom") && record.content.contains(":\n") ->
+                        record.content.substringAfter(":\n")
+                    else -> record.content
+                }
                 val end = minOf(body.length, budget).let {
                     if (it < body.length && it > 0 && body[it - 1].isHighSurrogate() && body[it].isLowSurrogate()) it - 1 else it
                 }

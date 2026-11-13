@@ -28,6 +28,15 @@ class ReplyHttpClient(private val client: Call.Factory = HttpClients.shared.newB
     }
 
     internal suspend fun <T> request(settings: ReplySettings, payload: org.json.JSONObject, parse: (String) -> T): T =
+        try {
+            once(settings, payload, parse)
+        } catch (error: IllegalStateException) {
+            // 输出被截断说明 max_tokens 不够，放宽上限重试一次，比让用户手动点重试好。
+            if (error.message?.contains("截断") != true) throw error
+            once(settings, org.json.JSONObject(payload.toString()).put("max_tokens", 2400), parse)
+        }
+
+    private suspend fun <T> once(settings: ReplySettings, payload: org.json.JSONObject, parse: (String) -> T): T =
         suspendCancellableCoroutine { continuation ->
             val call = client.newCall(Request.Builder().url(settings.endpoint).header("Authorization", "Bearer ${settings.apiKey}")
                 .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build())

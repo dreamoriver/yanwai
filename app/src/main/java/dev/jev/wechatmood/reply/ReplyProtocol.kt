@@ -38,7 +38,8 @@ object ReplyProtocol {
             voice_transcript 是语音识别文字，可能识别错误，没有音调、哭腔等声音证据。voice_state 为 FAILED 的内容未知，不能猜测。
             参考资料提供方法，不照抄套路；普通朋友和工作聊天不强加恋爱框架。尊重明确拒绝和双方边界。
             没有必要继续聊时可以建议简短收尾，不为了生成而追问。不替用户发送消息。
-            给 3–5 个互斥的候选回复，按推荐度从高到低排列；每个候选是一条完整、可直接发送的消息，最多两小句，不写成小作文。
+            给 3–5 个互斥的候选回复，按推荐度从高到低排列；每个候选是一条完整、可直接发送的消息，
+            最多两小句、合计不超过 30 个字，不写成小作文，reason 不超过 40 字。
             候选之间要在角度或语气上真的不同：比如一个直接回应、一个轻松岔开、一个稍微认真；不要只做同义改写。
             “OK”“昂”“好呀”等用词取决于我平时的口吻、关系和当下情绪；不因恋人身份就固定用“昂”，不为凑条数加语气词。
             不含编号、引号说明、发送时间或分支；候选不能以对方尚未作出的回答为前提。
@@ -49,7 +50,7 @@ object ReplyProtocol {
         """.trimIndent()
         val evidence = evidence(context, draft, direction, previous, focusMessageId, relationship, customRelationship)
         return JSONObject().put("model", settings.model).put("stream", false)
-            .put("max_tokens", 900).put("temperature", 0.9).put("messages", JSONArray()
+            .put("max_tokens", 1200).put("temperature", 0.9).put("messages", JSONArray()
             .put(JSONObject().put("role", "system").put("content", "$instructions\n\n$knowledge"))
             .put(JSONObject().put("role", "user").put("content", evidence.toString())))
     }

@@ -32,6 +32,15 @@ data class VoiceHostContract(val submit: Method, val state: Method, val text: Me
                 .apply { isAccessible = true }
             VoiceHostContract(submit.apply { isAccessible = true }, state.apply { isAccessible = true },
                 text.apply { isAccessible = true }, field)
-        }.onFailure { MoodLog.w("VOICE_CONTRACT_FAILED ${it.javaClass.simpleName}: ${it.message}") }.getOrNull()
+        }.onFailure { error ->
+            MoodLog.w("VOICE_CONTRACT_FAILED ${error.javaClass.simpleName}: ${error.message}")
+            // 打印实际方法签名，便于按版本精确适配；不含任何聊天内容。
+            runCatching {
+                val dump = component.methods.filter { !Modifier.isStatic(it.modifiers) }
+                    .map { m -> m.name + "(" + m.parameterTypes.joinToString(",") { type -> type.simpleName } + ")=" + m.returnType.simpleName }
+                    .take(60).joinToString("; ")
+                MoodLog.w("VOICE_CONTRACT_DUMP ${dump.take(1800)}")
+            }
+        }.getOrNull()
     }
 }

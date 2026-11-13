@@ -74,13 +74,13 @@ object SettingsSnapshotCache {
         }
     }
 
-    private fun seal(plain: ByteArray): String? = runCatching {
+    internal fun seal(plain: ByteArray): String? = runCatching {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         Base64.encodeToString(cipher.iv + cipher.doFinal(plain), Base64.NO_WRAP)
     }.onFailure { MoodLog.w("SNAPSHOT_SEAL_FAILED ${it.javaClass.simpleName}") }.getOrNull()
 
-    private fun unseal(sealed: String): ByteArray? = runCatching {
+    internal fun unseal(sealed: String): ByteArray? = runCatching {
         val bytes = Base64.decode(sealed, Base64.NO_WRAP)
         if (bytes.size <= IV_BYTES) return null
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -88,6 +88,10 @@ object SettingsSnapshotCache {
             GCMParameterSpec(GCM_TAG_BITS, bytes.copyOfRange(0, IV_BYTES)))
         cipher.doFinal(bytes.copyOfRange(IV_BYTES, bytes.size))
     }.onFailure { MoodLog.w("SNAPSHOT_UNSEAL_FAILED ${it.javaClass.simpleName}") }.getOrNull()
+
+    internal fun sealText(value: String): String? = seal(value.toByteArray(Charsets.UTF_8))
+
+    internal fun unsealText(sealed: String): String? = unseal(sealed)?.toString(Charsets.UTF_8)
 
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

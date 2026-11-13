@@ -155,8 +155,12 @@ object ModulePrefs {
         input.accountScope == dev.jev.wechatmood.hook.ReplyDatabaseHistory.accountScope(input) &&
             !manualAnalysis.isHidden(input) &&
             manualAnalysis.allows(input, isChatEnabled(input.talker))
-    fun canAnalyze(input: AnalysisInput): Boolean = input.backgroundReady && backgroundCurrent(input) && !input.accountScope.startsWith("pending:") &&
-        shouldDisplay(input) && session.current?.canAnalyze == true
+    fun canAnalyze(input: AnalysisInput): Boolean =
+        // 联系人背景要经 Provider 读取，主进程没被拉起时读不到；
+        // 这种情况降级为「无背景」继续分析，不要整块功能一起停掉。
+        (!input.backgroundReady || backgroundCurrent(input)) &&
+            !input.accountScope.startsWith("pending:") &&
+            shouldDisplay(input) && session.current?.canAnalyze == true
     fun selectMessage(input: AnalysisInput): Boolean {
         manualAnalysis.reveal(input)
         return manualAnalysis.select(scoped(input))

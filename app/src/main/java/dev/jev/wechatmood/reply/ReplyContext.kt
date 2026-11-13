@@ -30,7 +30,8 @@ data class ReplyContext(val talker: String, val messages: List<ReplyMessage>, va
     }
     companion object {
         const val MAX_MESSAGES = 100
-        const val MAX_CHARACTERS = 48000
+        /** 单次请求的聊天正文上限：太长会撞小模型的上下文，也会拖慢响应。 */
+        const val MAX_CHARACTERS = 12000
         fun collect(talker: String, records: List<MessageMetadata>, maxMessages: Int = MAX_MESSAGES): ReplyContext {
             require(maxMessages in 1..MAX_MESSAGES)
             val same = records.filter { it.talker == talker }.distinctBy { if (it.messageId > 0) "id:${it.messageId}" else "${it.createdAt}:${it.isSend}:${it.content}" }

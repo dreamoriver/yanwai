@@ -8,7 +8,7 @@ package dev.jev.wechatmood.reply
  * 目标 4.6K 字符以内，不联网、不引第三方依赖。
  */
 object ReplyKnowledgeSelector {
-    private const val MAX_CHARS = 4_600
+    private const val MAX_CHARS = 3_500
     private const val HEAD_CHARS = 1_000
     private const val MAX_SECTIONS = 4
     private const val MIN_SECTION_CHARS = 120

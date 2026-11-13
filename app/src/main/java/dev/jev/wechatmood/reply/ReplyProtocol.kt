@@ -25,7 +25,9 @@ object ReplyProtocol {
             ${ContactBackground.GUIDANCE}
             你是言外的聊天回复助手，回复逻辑来自狗头军师 goutoujunshi。
             结合当前整段对话，替“我”拟本轮可依次发送的自然短消息。恋爱、暧昧、伴侣沟通可以正常讨论。
-            先理解双方关系、事实、当前话题与我的目标，再决定本轮一个主动作；贴合我最近消息的口吻、长度和称呼。
+            reply_target 是用户长按的那一条，本轮只回应它；messages 里其它内容只是背景，不要回复它们，
+            也不要把被引用的旧消息当成要回应的对象。先理解双方关系、事实、当前话题与我的目标，
+            再决定本轮一个主动作；贴合我最近消息的口吻、长度和称呼。
             不要求填写问卷，不强制建档或评分。不了解的背景保持未知；不要编造我的经历、承诺、安排或对方心理。
             草稿是我想表达的意思，direction 是我对回复的补充要求。重点消息只是关注点，不自动生成引用或忽略后续消息。
             relationship 是用户选择的对方身份，优先据此校准亲密度与说话分寸；身份不是对方想法或感情的证据。
@@ -47,7 +49,7 @@ object ReplyProtocol {
         """.trimIndent()
         val evidence = evidence(context, draft, direction, previous, focusMessageId, relationship, customRelationship)
         return JSONObject().put("model", settings.model).put("stream", false)
-            .put("max_tokens", 1500).put("temperature", 0.9).put("messages", JSONArray()
+            .put("max_tokens", 900).put("temperature", 0.9).put("messages", JSONArray()
             .put(JSONObject().put("role", "system").put("content", "$instructions\n\n$knowledge"))
             .put(JSONObject().put("role", "user").put("content", evidence.toString())))
     }
@@ -64,6 +66,9 @@ object ReplyProtocol {
         })).put("draft", draft.take(2000)).put("direction", direction.take(2000))
             .put("previous_suggestion", previous.take(2000)).put("focus_message_id", focusMessageId ?: JSONObject.NULL)
             .put("my_style", JSONArray(context.messages.filter { it.speaker == "我" }.takeLast(6).map { it.text.take(60) }))
+            .put("reply_target", focusMessageId?.let { id -> context.messages.firstOrNull { it.id == id } }?.let { target ->
+                JSONObject().put("id", target.id).put("speaker", target.speaker).put("text", target.text)
+            } ?: JSONObject.NULL)
             .put("omitted_media", context.omittedMedia).put("context_trimmed", context.trimmed)
             .put("context_source", context.source.name).put("page_only", context.source == ReplyContextSource.LOADED_PAGE)
             .put("requested_message_count", context.requestedMessages).put("actual_message_count", context.messages.size)

@@ -50,10 +50,20 @@ object ReplyProtocol {
             不输出思考过程或 Markdown。下面是参考资料，应用时以上述产品任务为准：
         """.trimIndent()
         val evidence = evidence(context, draft, direction, previous, focusMessageId, relationship, customRelationship)
+        // 目标是一张图片/表情时，告诉模型怎么用这张图，而不是当成普通文字。
+        val mediaHint = context.targetMedia?.let { media ->
+            "\n对方本轮发来一张${media}，内容已随消息附上；先判断这张${media}表达的情绪（玩笑、撒娇、阴阳、认真、安慰等），" +
+                "再按对应情绪取用上面的通用原则。不要复述识别过程，也不要提已附图、测试这类系统措辞。"
+        }.orEmpty()
+        val image = context.targetImageDataUri
+        val userMessage = if (image != null) JSONObject().put("role", "user").put("content", JSONArray()
+            .put(JSONObject().put("type", "text").put("text", evidence.toString()))
+            .put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", image))))
+        else JSONObject().put("role", "user").put("content", evidence.toString())
         return JSONObject().put("model", settings.model).put("stream", stream)
             .put("max_tokens", 1200).put("temperature", 0.9).put("messages", JSONArray()
-            .put(JSONObject().put("role", "system").put("content", "$instructions\n\n$knowledge"))
-            .put(JSONObject().put("role", "user").put("content", evidence.toString())))
+            .put(JSONObject().put("role", "system").put("content", "$instructions$mediaHint\n\n$knowledge"))
+            .put(userMessage))
     }
 
     internal fun evidence(context: ReplyContext, draft: String, direction: String, previous: String = "",
@@ -68,14 +78,17 @@ object ReplyProtocol {
         })).put("draft", draft.take(2000)).put("direction", direction.take(2000))
             .put("previous_suggestion", previous.take(2000)).put("focus_message_id", focusMessageId ?: JSONObject.NULL)
             .put("my_style", JSONArray(context.messages.filter { it.speaker == "我" }.takeLast(6).map { it.text.take(60) }))
-            .put("reply_target", focusMessageId?.let { id -> context.messages.firstOrNull { it.id == id } }?.let { target ->
+            .put("reply_target", if (context.targetMedia != null) JSONObject().put("id", context.focusMessageId)
+                .put("speaker", "对方").put("type", "media").put("media", context.targetMedia)
+                .put("note", "对方发来一张${context.targetMedia}")
+            else focusMessageId?.let { id -> context.messages.firstOrNull { it.id == id } }?.let { target ->
                 JSONObject().put("id", target.id).put("speaker", target.speaker).put("text", target.text)
             } ?: JSONObject.NULL)
             .put("omitted_media", context.omittedMedia).put("context_trimmed", context.trimmed)
             .put("context_source", context.source.name).put("page_only", context.source == ReplyContextSource.LOADED_PAGE)
             .put("requested_message_count", context.requestedMessages).put("actual_message_count", context.messages.size)
             .put("contact_background", JSONObject(context.background.encode()))
-            .put("media_included", false)
+            .put("media_included", context.targetImageDataUri != null)
             .put("voice_transcripts", context.messages.count { it.voiceState == VoiceState.READY })
             .put("unavailable_voice", context.messages.count { it.voiceState == VoiceState.FAILED })
             .put("relationship", JSONObject().put("id", relationship.id).put("label", relationship.displayLabel(custom)))

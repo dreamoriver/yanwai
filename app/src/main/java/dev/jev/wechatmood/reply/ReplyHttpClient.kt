@@ -37,9 +37,40 @@ class ReplyHttpClient(private val client: Call.Factory = HttpClients.shared.newB
             once(settings, payload, parse, onPartial)
         } catch (error: IllegalStateException) {
             // 输出被截断说明 max_tokens 不够，放宽上限重试一次，比让用户手动点重试好。
-            if (error.message?.contains("截断") != true) throw error
-            once(settings, JSONObject(payload.toString()).put("max_tokens", 2400), parse, onPartial)
+            if (error.message?.contains("截断") == true) {
+                once(settings, JSONObject(payload.toString()).put("max_tokens", 2400), parse, onPartial)
+            } else if (hasImage(payload)) {
+                // 模型不接受图片（常见 400）时退回纯文本，功能不至于整块失败。
+                dev.jev.wechatmood.core.MoodLog.w("REPLY_FALLBACK_TEXT 模型不接受图片，已回退纯文本：${error.message?.take(60)}")
+                once(settings, withoutImage(payload), parse, onPartial)
+            } else throw error
         }
+
+    private fun hasImage(payload: JSONObject): Boolean {
+        val messages = payload.optJSONArray("messages") ?: return false
+        for (index in 0 until messages.length()) {
+            val content = messages.optJSONObject(index)?.optJSONArray("content") ?: continue
+            for (part in 0 until content.length()) {
+                if (content.optJSONObject(part)?.optString("type") == "image_url") return true
+            }
+        }
+        return false
+    }
+
+    /** 把多模态 user 消息还原成纯文本，作为模型不支持图片时的兜底。 */
+    private fun withoutImage(payload: JSONObject): JSONObject {
+        val copy = JSONObject(payload.toString())
+        val messages = copy.optJSONArray("messages") ?: return copy
+        for (index in 0 until messages.length()) {
+            val message = messages.optJSONObject(index) ?: continue
+            val content = message.optJSONArray("content") ?: continue
+            val text = (0 until content.length()).mapNotNull { part ->
+                content.optJSONObject(part)?.takeIf { it.optString("type") == "text" }?.optString("text")
+            }.joinToString("\n")
+            message.put("content", text)
+        }
+        return copy
+    }
 
     private suspend fun <T> once(settings: ReplySettings, payload: JSONObject, parse: (String) -> T,
         onPartial: ((String) -> Unit)?): T =

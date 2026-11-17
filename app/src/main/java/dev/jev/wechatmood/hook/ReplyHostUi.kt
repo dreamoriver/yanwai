@@ -46,6 +46,9 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
     private var snapshot: ReplyContext? = null
     private var newMessageNotice: TextView? = null
     private var invalidateRequest: (() -> Unit)? = null
+    /** 长按图片/表情时记住目标消息与已取的图，重新读取历史后也要留住。 */
+    private var targetFocusId: Long = 0
+    private var targetImage: String? = null
 
     fun update(currentTalker: String?) {
         if (dialog?.isShowing == true && savingRoleWindow !== dialog && drawerRolesRevision != ModulePrefs.analysisSettings()?.rolesRevision) hide()
@@ -92,13 +95,15 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
         return found
     }
 
-    fun open(focusMessageId: Long? = null): Boolean {
+    fun open(focusMessageId: Long? = null, imageDataUri: String? = null): Boolean {
+        targetFocusId = focusMessageId ?: 0
+        targetImage = imageDataUri
         val selectedTalker = talker ?: return false
         if (MessageSniffer.currentReplyTalker() != selectedTalker) return false
         if (dialog?.isShowing == true || openingJob?.isActive == true) return true
         val epoch = ReplyDatabaseHistory.pendingAccountScope()
         ownerEpoch = epoch
-        val live = runCatching { MessageSniffer.replyContext(requireBottom = false) }.getOrElse {
+        val live = runCatching { MessageSniffer.replyContext(requireBottom = false, focusId = targetFocusId) }.getOrElse {
             toast(it.message ?: "读取聊天失败"); return true
         }
         if (live.talker != selectedTalker) return false
@@ -118,13 +123,13 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
                 ensureActive()
                 if (generation != ModulePrefs.analysisSettings()?.generation || rolesRevision != ModulePrefs.analysisSettings()?.rolesRevision) return@launch
                 if (!owner.isCurrent(ReplyDatabaseHistory.pendingAccountScope(), MessageSniffer.currentReplyTalker())) return@launch
-                val latestPage = MessageSniffer.replyContext(requireBottom = false)
+                val latestPage = MessageSniffer.replyContext(requireBottom = false, focusId = targetFocusId)
                 val latestAccount = withContext(Dispatchers.IO) { ReplyDatabaseHistory.replyAccount(latestPage) }
                 if (generation != ModulePrefs.analysisSettings()?.generation || rolesRevision != ModulePrefs.analysisSettings()?.rolesRevision ||
                     !owner.isCurrent(ReplyDatabaseHistory.pendingAccountScope(), MessageSniffer.currentReplyTalker()) ||
                     !owner.acceptsAccount(latestAccount)) return@launch
                 // All reads finish before the editor is created, so a late load cannot erase typed text.
-                openResolved(focusMessageId, live, owner, identity, preferredLimit, background)
+                openResolved(focusMessageId, live, owner, identity, preferredLimit, background, imageDataUri)
             } catch (e: CancellationException) { throw e }
             catch (error: Exception) {
                 MoodLog.e("REPLY_SETTINGS_READ_FAILED", error)
@@ -140,7 +145,8 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
     }
 
     private fun openResolved(focusMessageId: Long?, live: ReplyContext, owner: ReplyIdentityOwner,
-        identity: ReplyIdentitySetting, preferredLimit: Int, contactBackground: ContactBackground): Boolean {
+        identity: ReplyIdentitySetting, preferredLimit: Int, contactBackground: ContactBackground,
+        imageDataUri: String? = null): Boolean {
         val selectedTalker = owner.talker
         val generation = ModulePrefs.analysisSettings()?.generation
         var rolesRevision = ModulePrefs.analysisSettings()?.rolesRevision
@@ -152,7 +158,10 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
         var selectedIdentity = identity
         val reference = ReplyHistorySelection(selectedTalker, remembered?.context?.takeIf { it.requestedMessages == preferredLimit })
         // Reopening saved content must not depend on scrolling to the latest message or text input mode.
-        val captured = remembered?.context ?: live
+        val captured = (remembered?.context ?: live).let { ctx ->
+            val image = imageDataUri ?: targetImage
+            if (image != null && ctx.targetImageDataUri == null) ctx.copy(targetImageDataUri = image) else ctx
+        }
         if (captured.talker != selectedTalker) return false
         val initialEditor = editor()
         if (remembered == null && initialEditor == null) { toast("请先切换到文字输入"); return true }
@@ -638,9 +647,9 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
             failed = false
             state.text = ""; state.setTextColor(theme.muted)
             renderParts(); controls(false)
-            val loaded = runCatching { MessageSniffer.replyContext(requireBottom = false) }.getOrElse {
+            val loaded = runCatching { MessageSniffer.replyContext(requireBottom = false, focusId = targetFocusId) }.getOrElse {
                 reference.fail(ticket); state.text = it.message ?: "读取聊天失败，请重试"; controls(false); return
-            }
+            }.let { ctx -> targetImage?.let { if (ctx.targetImageDataUri == null) ctx.copy(targetImageDataUri = it) else ctx } ?: ctx }
             if (loaded.talker != selectedTalker) { reference.cancel(); window.dismiss(); return }
             historyJob = scope.launch {
                 try {

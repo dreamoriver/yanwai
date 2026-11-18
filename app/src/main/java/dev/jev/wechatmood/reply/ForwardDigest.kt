@@ -20,6 +20,7 @@ object ForwardDigest {
     private const val MAX_DEPTH = 3
     private const val FILLER_MIN_LENGTH = 120
     private const val FILLER_MAX_PERIOD = 8
+    private const val FILLER_PREFIX_MIN = 32
     private val NOISE = Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u200B-\\u200F\\u2028\\u2029\\uFEFF]")
 
     data class Item(val type: Int, val sender: String, val text: String, val time: String, val nested: Boolean = false)
@@ -70,7 +71,9 @@ object ForwardDigest {
             tag(body, "desc").decode().split('\n').filter { it.isNotBlank() }.forEach { line ->
                 if (out.size >= MAX_ITEMS || budget() <= 0) { omitted(); return@forEach }
                 val sender = line.substringBefore(':', "").trim()
-                val text = line.substringAfter(':', line).trim().take(MAX_ITEM_CHARS)
+                val text = line.substringAfter(':', line).trim()
+                    .cleanNoise().trimFillerPrefix().take(MAX_ITEM_CHARS)
+                if (text.isBlank() || text.isFiller()) { omitted(); return@forEach }
                 spend(text.length + sender.length)
                 out += Item(1, sender, text, "")
             }
@@ -108,9 +111,9 @@ object ForwardDigest {
                     text = "[聊天记录]"
                 }
             }
-            val cut = text.take(MAX_ITEM_CHARS).cleanNoise()
             // 整屏重复字符（群友常发 uinull / 零宽填充）没有信息量，直接跳过，别占摘要开头。
-            if (cut.isFiller()) {
+            val cut = text.cleanNoise().trimFillerPrefix().take(MAX_ITEM_CHARS)
+            if (cut.isBlank() || cut.isFiller()) {
                 omitted()
                 return@forEach
             }
@@ -165,6 +168,21 @@ object ForwardDigest {
 
     /** 去掉不可打印字符与零宽填充，避免整屏噪声进摘要。 */
     internal fun String.cleanNoise(): String = NOISE.replace(this, "").trim()
+
+    /** 行首整段是固定周期重复（如 nullnull…）时剥掉，保留后面的正文。 */
+    internal fun String.trimFillerPrefix(): String {
+        val text = cleanNoise()
+        if (text.length < FILLER_PREFIX_MIN) return text
+        // 「哈哈哈…」这类单字重复是语气，不是刷屏填充。
+        if (text.take(FILLER_PREFIX_MIN).toSet().size <= 1) return text
+        for (period in 2..FILLER_MAX_PERIOD) {
+            var end = period
+            while (end + period <= text.length &&
+                text.regionMatches(end - period, text, end, period)) end += period
+            if (end >= FILLER_PREFIX_MIN) return text.substring(end).trim()
+        }
+        return text
+    }
 
     /** 长且按固定短周期重复的文本基本是刷屏填充，例如 uinulluinull…；正常的重复语气词不在此列。 */
     internal fun String.isFiller(): Boolean {

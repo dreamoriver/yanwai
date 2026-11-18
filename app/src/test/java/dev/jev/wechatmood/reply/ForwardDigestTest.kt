@@ -139,4 +139,21 @@ class ForwardDigestTest {
         val message = requireNotNull(ForwardDigest.parse(raw))
         assertEquals("前面后面", message.items[0].text)
     }
+
+    @Test fun `desc 里的 null 填充被剥掉`() {
+        val raw = wrap("<recordinfo><title>群聊的聊天记录</title><desc>李工: " + "null".repeat(100) +
+            "真正内容</desc></recordinfo>")
+        val message = requireNotNull(ForwardDigest.parse(raw))
+        assertEquals("真正内容", message.items[0].text)
+    }
+
+    @Test fun `合并转发在回复上下文里摊平成文字`() {
+        val raw = wrap("<recordinfo><title>群聊的聊天记录</title><datalist>" +
+            item("张三", "明晚八点见") + "</datalist></recordinfo>")
+        val meta = dev.jev.wechatmood.hook.MessageMetadata(49, 0, raw, "chat", 9, 1000)
+        val context = ReplyContext.collect("chat", listOf(meta))
+        assertEquals(1, context.messages.size)
+        assertTrue(context.messages[0].text.contains("合并转发"))
+        assertTrue(context.messages[0].text.contains("明晚八点见"))
+    }
 }

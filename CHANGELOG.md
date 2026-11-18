@@ -3,6 +3,13 @@
 基于 [YIRC99/yanwai](https://github.com/YIRC99/yanwai) 的本地改动，仅供自己使用。
 原仓库未声明开源许可证，因此不对外分发安装包。
 
+## 2.9.98
+
+把界面自检接进流程（只有文档、脚本与门禁，不改界面）
+- pre-commit：没更新 version.properties 直接拒绝；接着跑 tools/check-ui-style.sh，有违规同样拒绝（本地没有 PowerShell 时用 shell 判据兜底）
+- CI：构建前加 Check UI style，绕过本地钩子也会在发版前失败
+- 已实测：不改版本号被拦、含宿主 AlertDialog 的文件也被拦
+
 ## 2.9.97
 
 把界面规范写进仓库（只有文档与自检脚本，不改界面）

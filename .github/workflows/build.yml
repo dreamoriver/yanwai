@@ -102,6 +102,10 @@ jobs:
             exit 1;
           }
 
+      - name: Check UI style
+        # 微信内窗口必须走 PanelKit + ReplyTheme，规则见 DESIGN.md「界面分层」。
+        run: sh tools/check-ui-style.sh
+
       - name: Unit tests (report only)
         # 现有仓库有 24 项历史失败；主线发版跳过以节省时间，PR 时仍出报告。
         if: github.event_name == 'pull_request'

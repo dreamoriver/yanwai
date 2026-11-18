@@ -1,6 +1,20 @@
 #!/bin/sh
+# 提交前两道检查：版本号必须跟着走、界面样式不许倒退。
+# 启用方式：git config core.hooksPath .githooks
+
+# 1) 版本号：有 PowerShell 就用原脚本，没有（Linux/macOS）就用同样的判据。
 if command -v pwsh >/dev/null 2>&1; then
-  exec pwsh -NoProfile -File tools/check-version.ps1 -Staged
+    pwsh -NoProfile -File tools/check-version.ps1 -Staged || exit 1
+elif command -v powershell.exe >/dev/null 2>&1; then
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/check-version.ps1 -Staged || exit 1
 else
-  exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/check-version.ps1 -Staged
+    if ! git diff --cached --name-only | grep -qx 'version.properties'; then
+        echo "版本未更新：AGENTS.md 要求每次提交同时推进 version.properties。" >&2
+        exit 1
+    fi
+fi
+
+# 2) 界面样式：微信内窗口只走 PanelKit + ReplyTheme，规则见 DESIGN.md。
+if [ -f tools/check-ui-style.sh ]; then
+    sh tools/check-ui-style.sh || exit 1
 fi

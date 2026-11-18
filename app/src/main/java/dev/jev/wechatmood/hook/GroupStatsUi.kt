@@ -65,7 +65,9 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
     private val kit = PanelKit(activity)
     private val theme = kit.theme
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val stats: GroupStats
+    private var stats: GroupStats
+    /** 筛选变化时原地重算，不重建面板。 */
+    private var onFilterChanged: (() -> Unit)? = null
     private val topContainer = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
     private var currentNames: Map<String, String> = emptyMap()
     /** 成员原始名 → 表格里显示的文本，生成图片时复用同一套规则。 */
@@ -92,14 +94,34 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         return if (StatsFilter.limit > 0) byTime.takeLast(StatsFilter.limit) else byTime
     }
 
-    init {
+    init { stats = computeStats() }
+
+    /** 按当前筛选重算，只读内存里的消息，不碰数据库。 */
+    private fun computeStats(): GroupStats {
         val records = selectedMessages().map {
             StatRecord(it.time, if (it.speaker == "我") 1 else 0, 1, it.text, it.speaker)
         }
         val base = GroupStatsCalculator.compute(records, sampled = context.trimmed)
         // 媒体不在回复上下文里，用漏掉的条数补上，否则永远是 0。
         val voices = context.messages.count { it.voiceState == dev.jev.wechatmood.voice.VoiceState.READY }
-        stats = base.copy(media = context.omittedMedia, voice = voices)
+        return base.copy(media = context.omittedMedia, voice = voices)
+    }
+
+    /** 说明行：跟着筛选走，切时段时只换文字。 */
+    private fun summaryText(): String {
+        val window = when (StatsFilter.range) {
+            StatsFilter.Range.TODAY -> "今天 00:00–现在"
+            else -> StatsFilter.range.label
+        }
+        return "$window · ${StatsFilter.limitLabel} · 共 ${stats.total} 条 · 人均 ${stats.perCapita} 条 · 只在本机计算"
+    }
+
+    private fun spanText(): String {
+        val first = context.messages.firstOrNull { it.time > 0 }?.time
+        val last = context.messages.lastOrNull { it.time > 0 }?.time
+        if (first == null || last == null) return "未知"
+        val format = java.text.SimpleDateFormat("HH:mm", java.util.Locale.CHINA)
+        return format.format(java.util.Date(first)) + "–" + format.format(java.util.Date(last))
     }
 
     fun show() {
@@ -111,46 +133,35 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
             background = theme.shape(theme.surface, ReplyMetrics.RADIUS_PANEL, theme.border)
         }
         body.addView(kit.heading(if (context.talker.endsWith("@chatroom")) "群聊统计" else "聊天统计"))
-        val first = context.messages.firstOrNull { it.time > 0 }?.time
-        val last = context.messages.lastOrNull { it.time > 0 }?.time
-        val span = if (first != null && last != null) {
-            val format = java.text.SimpleDateFormat("HH:mm", java.util.Locale.CHINA)
-            " · " + format.format(java.util.Date(first)) + "–" + format.format(java.util.Date(last))
-        } else ""
         val filters = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, theme.dp(10), 0, 0)
         }
-        filters.addView(filterPill("时段 · ${StatsFilter.range.label}") { pickRange() },
-            LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = theme.dp(8) })
-        filters.addView(filterPill("条数 · ${StatsFilter.limitLabel}") { pickLimit() },
-            LinearLayout.LayoutParams(0, -2, 1f))
+        val rangePill = filterPill("时段 · ${StatsFilter.range.label}") { pickRange() }
+        val limitPill = filterPill("条数 · ${StatsFilter.limitLabel}") { pickLimit() }
+        filters.addView(rangePill, LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = theme.dp(8) })
+        filters.addView(limitPill, LinearLayout.LayoutParams(0, -2, 1f))
         body.addView(filters)
-        val windowText = when (StatsFilter.range) {
-            StatsFilter.Range.TODAY -> "今天 00:00–现在"
-            else -> StatsFilter.range.label
-        }
-        body.addView(kit.caption("$windowText · ${StatsFilter.limitLabel} · 共 ${stats.total} 条 · 人均 ${stats.perCapita} 条 · 只在本机计算"))
-        body.addView(kit.caption("数据范围 $span"))
+        val summaryLine = kit.caption(summaryText())
+        val spanLine = kit.caption("数据范围 ${spanText()}")
+        body.addView(summaryLine)
+        body.addView(spanLine)
 
         val numbers = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, theme.dp(14), 0, theme.dp(6))
         }
-        numbers.addView(number("${stats.total}", "条消息"), weight())
-        numbers.addView(number("${stats.senders}", "人发言"), weight())
-        numbers.addView(number("${stats.media + stats.voice}", "图片语音"), weight())
-        numbers.addView(number("${stats.activeHours.size}", "个时段"), weight())
+        val cells = listOf("条消息", "人发言", "图片语音", "个时段").map { number(it) }
+        cells.forEach { numbers.addView(it.first, weight()) }
         body.addView(numbers, LinearLayout.LayoutParams(-1, -2))
 
         body.addView(LinearLayout(activity), LinearLayout.LayoutParams(-1, theme.dp(6)))
         body.addView(topContainer, LinearLayout.LayoutParams(-1, -2))
         renderTop(emptyMap())
 
-        if (stats.activeHours.isNotEmpty()) {
-            body.addView(kit.sectionLabel("活跃时段"))
-            body.addView(kit.caption(stats.activeHours.joinToString("、") { "${it} 点" }))
-        }
+        val activeBox = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(activeBox, LinearLayout.LayoutParams(-1, -2))
+        renderActiveHours(activeBox)
 
         val analysisBox = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
@@ -182,6 +193,31 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
                 aiButton.text = "重新分析"
                 aiButton.isEnabled = true
                 scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+            }
+        }
+        // 切换筛选：只改数字、表格和时段，不关窗口、不重建面板，滚动位置也保留。
+        onFilterChanged = {
+            stats = computeStats()
+            rangePill.text = "时段 · ${StatsFilter.range.label}"
+            limitPill.text = "条数 · ${StatsFilter.limitLabel}"
+            summaryLine.text = summaryText()
+            spanLine.text = "数据范围 ${spanText()}"
+            cells[0].second.text = "${stats.total}"
+            cells[1].second.text = "${stats.senders}"
+            cells[2].second.text = "${stats.media + stats.voice}"
+            cells[3].second.text = "${stats.activeHours.size}"
+            renderTop(currentNames)
+            renderActiveHours(activeBox)
+            // 换了范围，旧的观察对不上新数据，直接清掉，避免复制或出图带错内容。
+            analysisBox.removeAllViews()
+            analysisBox.visibility = View.GONE
+            analysisText = ""
+            aiButton.text = "让 AI 说说这群在聊什么"
+            scope.launch {
+                val names = runCatching {
+                    ReplyDatabaseHistory.displayNames(stats.members.map { it.name })
+                }.getOrDefault(emptyMap())
+                if (names.isNotEmpty()) renderTop(currentNames + names)
             }
         }
         val actions = LinearLayout(activity).apply {
@@ -244,6 +280,7 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
     private fun renderTop(names: Map<String, String>) {
         currentNames = names
         topContainer.removeAllViews()
+        displayedNames.clear()
         if (stats.members.isEmpty()) {
             topContainer.addView(kit.caption("没有可统计的发言"))
             return
@@ -465,23 +502,12 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
 
     private fun filterPill(label: String, action: () -> Unit): TextView = kit.pill(label, action)
 
-    /**
-     * 切换筛选后必须重新查数据库：只重建界面会继续用旧数据，
-     * 于是出现「有时候对有时候不对」。
-     */
-    private fun recreate() {
-        dialog?.dismiss()
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            reload?.invoke() ?: GroupStatsUi(activity, context).show()
-        }, 400)
-    }
-
     private fun pickRange() {
         val values = StatsFilter.Range.values()
         kit.picker("分析时段", values.map { it.label }, values.indexOf(StatsFilter.range)) { which ->
             StatsFilter.range = values[which]
             dev.jev.wechatmood.core.MoodLog.i("STATS_FILTER range=${StatsFilter.range}")
-            recreate()
+            onFilterChanged?.invoke()
         }
     }
 
@@ -491,27 +517,38 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
             options.indexOf(StatsFilter.limit)) { which ->
             StatsFilter.limit = options[which]
             dev.jev.wechatmood.core.MoodLog.i("STATS_FILTER limit=${StatsFilter.limit}")
-            recreate()
+            onFilterChanged?.invoke()
         }
     }
 
     private fun weight() = LinearLayout.LayoutParams(0, -2, 1f)
-    private fun number(value: String, label: String) = LinearLayout(activity).apply {
-        orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER_HORIZONTAL
-        minimumHeight = theme.dp(ReplyMetrics.TAP)
-        setPadding(0, theme.dp(6), 0, theme.dp(6))
-        addView(TextView(activity).apply {
-            text = value
+    /** 数字块：整块排版固定，只把数字视图交出去，换筛选时改文字不重排。 */
+    private fun number(label: String): Pair<LinearLayout, TextView> {
+        val value = TextView(activity).apply {
             textSize = 20f
             setTextColor(theme.ink)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-        })
-        addView(TextView(activity).apply {
-            text = label
-            textSize = ReplyMetrics.TEXT_CAPTION
-            setTextColor(theme.muted)
-        })
+        }
+        val box = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            minimumHeight = theme.dp(ReplyMetrics.TAP)
+            setPadding(0, theme.dp(6), 0, theme.dp(6))
+            addView(value)
+            addView(TextView(activity).apply {
+                text = label
+                textSize = ReplyMetrics.TEXT_CAPTION
+                setTextColor(theme.muted)
+            })
+        }
+        return box to value
+    }
+
+    private fun renderActiveHours(box: LinearLayout) {
+        box.removeAllViews()
+        if (stats.activeHours.isEmpty()) return
+        box.addView(kit.sectionLabel("活跃时段"))
+        box.addView(kit.caption(stats.activeHours.joinToString("、") { "${it} 点" }))
     }
     private fun row(name: String, value: String) = LinearLayout(activity).apply {
         orientation = LinearLayout.HORIZONTAL

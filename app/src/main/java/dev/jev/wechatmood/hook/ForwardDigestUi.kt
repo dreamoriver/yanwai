@@ -5,12 +5,9 @@ import android.app.Dialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
-import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import dev.jev.wechatmood.core.ModulePrefs
@@ -25,75 +22,67 @@ import kotlinx.coroutines.launch
 
 /** 长按合并转发 → 摘要：解析 XML，交给配置的回复模型出一段要点。 */
 internal class ForwardDigestUi(private val activity: Activity, private val message: ForwardDigest.Message) {
-    private val theme = ReplyTheme(activity)
+    private val kit = PanelKit(activity)
+    private val theme = kit.theme
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var dialog: Dialog? = null
     private var text: TextView? = null
     private var footer: TextView? = null
+    private var loading: ReplyLoadingView? = null
     private var result = ""
 
+    /** 读取范围的说明，和统计窗口一样用一条辅助文字说清楚。 */
+    private fun notice(): String = when {
+        message.truncatedRaw -> "内容超过 512K，只读取了前面的部分"
+        message.omitted > 0 -> "已省略 ${message.omitted} 条过长或过多的内容"
+        message.nested > 0 -> "含 ${message.nested} 条嵌套聊天记录，已展开到第 3 层"
+        else -> ""
+    }
+
     fun show() {
-        val body = TextView(activity).apply {
-            textSize = 14f
-            setTextColor(theme.ink)
-            setLineSpacing(theme.dp(4).toFloat(), 1f)
+        val dialog = kit.sheet().also { this.dialog = it }
+        val root = kit.root()
+        val column = kit.content(root)
+
+        column.addView(kit.heading("合并转发摘要"))
+        column.addView(kit.caption("共 ${message.items.size} 条消息 · 由你配置的回复模型整理")
+            .apply { setPadding(0, theme.dp(4), 0, theme.dp(10)) })
+
+        val body = kit.body("正在整理 ${message.items.size} 条消息…", ReplyMetrics.TEXT_ITEM).apply {
             setTextIsSelectable(true)
-            text = "正在整理 ${message.items.size} 条消息…"
-            setPadding(theme.dp(20), theme.dp(12), theme.dp(20), theme.dp(12))
         }
         text = body
-        val scroll = MaxScroll(activity, (activity.resources.displayMetrics.heightPixels * 0.62f).toInt()).apply {
+        val scroll = PanelMaxScroll(activity, (activity.resources.displayMetrics.heightPixels * 0.62f).toInt()).apply {
             addView(body)
         }
-        val status = TextView(activity).apply {
-            textSize = 11f
-            setTextColor(theme.muted)
-            text = when {
-                message.truncatedRaw -> "内容超过 512K，只读取了前面的部分"
-                message.omitted > 0 -> "已省略 ${message.omitted} 条过长或过多的内容"
-                message.nested > 0 -> "含 ${message.nested} 条嵌套聊天记录，已展开到第 3 层"
-                else -> ""
-            }
-            setPadding(theme.dp(20), 0, theme.dp(20), theme.dp(4))
+        column.addView(scroll, LinearLayout.LayoutParams(-1, -2))
+
+        val noticeText = notice()
+        val note = kit.caption(noticeText).apply {
+            if (noticeText.isBlank()) visibility = View.GONE
+            setPadding(0, theme.dp(6), 0, 0)
         }
-        footer = status
-        val copy = TextView(activity).apply {
-            text = "复制"
-            gravity = Gravity.CENTER
-            setTextColor(theme.onAccent)
-            textSize = 14f
-            background = GradientDrawable().apply {
-                cornerRadius = theme.dp(10).toFloat()
-                setColor(theme.accent)
-            }
-            setPadding(0, theme.dp(10), 0, theme.dp(10))
-            isEnabled = false
-            alpha = 0.5f
-            setOnClickListener {
-                if (result.isBlank()) return@setOnClickListener
+        footer = note
+        column.addView(note, LinearLayout.LayoutParams(-1, -2))
+
+        val busy = kit.loading().apply { showLoading("正在整理 ${message.items.size} 条消息…") }
+        loading = busy
+        column.addView(busy, LinearLayout.LayoutParams(-1, -2).apply { topMargin = theme.dp(8) })
+
+        val copy = theme.action("复制", primary = true) {
+            if (result.isNotBlank()) {
                 (activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
                     .setPrimaryClip(ClipData.newPlainText("聊天记录摘要", result))
                 Toast.makeText(activity, "已复制", Toast.LENGTH_SHORT).show()
             }
+        }.apply {
+            isEnabled = false
+            alpha = 0.5f
         }
-        val root = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            setBackgroundColor(theme.surface)
-            addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-            addView(status)
-            addView(copy, LinearLayout.LayoutParams(-1, -2).apply {
-                setMargins(theme.dp(20), 0, theme.dp(20), theme.dp(16))
-            })
-        }
-        val dialog = Dialog(activity).also { this.dialog = it }
+        column.addView(copy, LinearLayout.LayoutParams(-1, -2).apply { topMargin = theme.dp(12) })
+
         dialog.setContentView(root)
-        dialog.window?.setBackgroundDrawable(GradientDrawable().apply {
-            cornerRadius = theme.dp(16).toFloat()
-            setColor(theme.surface)
-        })
-        // 高度跟着文字走，最多占七成屏幕；只有内容超出时才滚动。
-        dialog.window?.setLayout((activity.resources.displayMetrics.widthPixels * 0.9f).toInt(),
-            android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
+        dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         dialog.setCanceledOnTouchOutside(true)
         dialog.setOnDismissListener { scope.cancel() }
         dialog.show()
@@ -128,19 +117,15 @@ internal class ForwardDigestUi(private val activity: Activity, private val messa
 
     private fun finish(content: String, copy: TextView) {
         val shown = with(ForwardDigest) { content.stripFiller() }
+        val failed = shown.startsWith("摘要失败")
         result = shown
         text?.text = shown
+        text?.setTextColor(if (failed) theme.error else theme.ink)
+        loading?.showLoading(null)
+        loading?.visibility = View.GONE
         copy.isEnabled = true
         copy.alpha = 1f
         if (message.omitted > 0) footer?.text = "已省略 ${message.omitted} 条过长或过多的内容"
-    }
-
-    /** 内容少时只占实际高度，超过上限才滚动。 */
-    private class MaxScroll(context: Context, private val limit: Int) : ScrollView(context) {
-        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-            super.onMeasure(widthMeasureSpec,
-                MeasureSpec.makeMeasureSpec(limit, MeasureSpec.AT_MOST))
-        }
     }
 
     fun dismiss() {

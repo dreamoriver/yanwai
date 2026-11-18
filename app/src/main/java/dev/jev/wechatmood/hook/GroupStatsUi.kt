@@ -62,7 +62,8 @@ object StatsFilter {
 internal class GroupStatsUi(private val activity: Activity, private val context: ReplyContext,
     private val dbMessages: List<dev.jev.wechatmood.reply.ReplyMessage> = emptyList(),
     private val reload: (() -> Unit)? = null) {
-    private val theme = ReplyTheme(activity)
+    private val kit = PanelKit(activity)
+    private val theme = kit.theme
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val stats: GroupStats
     private val topContainer = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
@@ -107,9 +108,9 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         val body = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(theme.dp(20), theme.dp(18), theme.dp(20), theme.dp(18))
-            background = theme.shape(theme.surface, 22, theme.border)
+            background = theme.shape(theme.surface, ReplyMetrics.RADIUS_PANEL, theme.border)
         }
-        body.addView(title(if (context.talker.endsWith("@chatroom")) "群聊统计" else "聊天统计"))
+        body.addView(kit.heading(if (context.talker.endsWith("@chatroom")) "群聊统计" else "聊天统计"))
         val first = context.messages.firstOrNull { it.time > 0 }?.time
         val last = context.messages.lastOrNull { it.time > 0 }?.time
         val span = if (first != null && last != null) {
@@ -121,16 +122,16 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
             setPadding(0, theme.dp(10), 0, 0)
         }
         filters.addView(filterPill("时段 · ${StatsFilter.range.label}") { pickRange() },
-            LinearLayout.LayoutParams(0, theme.dp(34), 1f).apply { rightMargin = theme.dp(8) })
+            LinearLayout.LayoutParams(0, -2, 1f).apply { rightMargin = theme.dp(8) })
         filters.addView(filterPill("条数 · ${StatsFilter.limitLabel}") { pickLimit() },
-            LinearLayout.LayoutParams(0, theme.dp(34), 1f))
+            LinearLayout.LayoutParams(0, -2, 1f))
         body.addView(filters)
         val windowText = when (StatsFilter.range) {
             StatsFilter.Range.TODAY -> "今天 00:00–现在"
             else -> StatsFilter.range.label
         }
-        body.addView(caption("$windowText · ${StatsFilter.limitLabel} · 共 ${stats.total} 条 · 人均 ${stats.perCapita} 条 · 只在本机计算"))
-        body.addView(caption("数据范围 $span"))
+        body.addView(kit.caption("$windowText · ${StatsFilter.limitLabel} · 共 ${stats.total} 条 · 人均 ${stats.perCapita} 条 · 只在本机计算"))
+        body.addView(kit.caption("数据范围 $span"))
 
         val numbers = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -140,15 +141,15 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         numbers.addView(number("${stats.senders}", "人发言"), weight())
         numbers.addView(number("${stats.media + stats.voice}", "图片语音"), weight())
         numbers.addView(number("${stats.activeHours.size}", "个时段"), weight())
-        body.addView(numbers, LinearLayout.LayoutParams(-1, theme.dp(72)))
+        body.addView(numbers, LinearLayout.LayoutParams(-1, -2))
 
         body.addView(LinearLayout(activity), LinearLayout.LayoutParams(-1, theme.dp(6)))
         body.addView(topContainer, LinearLayout.LayoutParams(-1, -2))
         renderTop(emptyMap())
 
         if (stats.activeHours.isNotEmpty()) {
-            body.addView(section("活跃时段"))
-            body.addView(caption(stats.activeHours.joinToString("、") { "${it} 点" }))
+            body.addView(kit.sectionLabel("活跃时段"))
+            body.addView(kit.caption(stats.activeHours.joinToString("、") { "${it} 点" }))
         }
 
         val analysisBox = LinearLayout(activity).apply {
@@ -187,22 +188,20 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
             aiButton.text = "正在分析…"
             analysisBox.visibility = View.VISIBLE
             analysisBox.removeAllViews()
-            val body = TextView(activity).apply {
-                text = "正在分析…"
-                textSize = 13f
-                setTextColor(theme.ink)
-                setPadding(0, theme.dp(4), 0, 0)
-                setLineSpacing(0f, 1.3f)
-            }
-            analysisBox.addView(panelWith("AI 观察", body),
+            analysisBox.addView(panelWith("AI 观察", kit.loading().apply { showLoading("正在分析最近聊天…") }),
                 LinearLayout.LayoutParams(-1, -2).apply { topMargin = theme.dp(8) })
             scope.launch {
                 val text = runCatching { analyzeAll(context) }.getOrElse { error ->
                     dev.jev.wechatmood.core.MoodLog.w("STATS_AI_FAILED " + error.message)
                     "分析失败：" + (error.message ?: "请重试")
                 }
-                body.text = text.ifBlank { "（模型返回空内容）" }
+                val failed = text.startsWith("分析失败")
+                val shown = text.ifBlank { "（模型返回空内容）" }
                 analysisText = text
+                analysisBox.removeAllViews()
+                val content = kit.body(shown).apply { if (failed) setTextColor(theme.error) }
+                analysisBox.addView(panelWith("AI 观察", content),
+                    LinearLayout.LayoutParams(-1, -2).apply { topMargin = theme.dp(8) })
                 aiButton.text = "重新分析"
                 aiButton.isEnabled = true
                 scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
@@ -214,7 +213,7 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         }
         actions.addView(theme.action("复制", quiet = true) {
             copy(exportText(analysisText))
-        }, LinearLayout.LayoutParams(0, theme.dp(44), 1f))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
         actions.addView(theme.action("生成图片", quiet = true) {
             val summary = analysisText.takeIf {
                 it.isNotBlank() && !it.startsWith("分析失败")
@@ -224,13 +223,13 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
             Toast.makeText(activity,
                 if (uri != null) "已保存到相册，可在相册里发送" else "保存失败，检查相册权限",
                 Toast.LENGTH_LONG).show()
-        }, LinearLayout.LayoutParams(0, theme.dp(44), 1f))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
         actions.addView(theme.action("关闭", quiet = true) { dialog.dismiss() },
-            LinearLayout.LayoutParams(0, theme.dp(44), 1f))
+            LinearLayout.LayoutParams(0, -2, 1f))
         actions.setPadding(theme.dp(20), theme.dp(8), theme.dp(20), theme.dp(14))
         val root = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            background = theme.shape(theme.surface, 22, theme.border)
+            background = theme.shape(theme.surface, ReplyMetrics.RADIUS_PANEL, theme.border)
         }
         body.background = null
 
@@ -239,7 +238,7 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
             addView(body)
         }
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.addView(aiButton, LinearLayout.LayoutParams(-1, theme.dp(44)).apply {
+        root.addView(aiButton, LinearLayout.LayoutParams(-1, -2).apply {
             setMargins(theme.dp(20), theme.dp(6), theme.dp(20), 0)
         })
         root.addView(actions, LinearLayout.LayoutParams(-1, -2))
@@ -250,7 +249,7 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
             setGravity(Gravity.BOTTOM)
             setLayout(ViewGroup.LayoutParams.MATCH_PARENT, (screenHeight * 0.82).toInt())
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            setDimAmount(0.32f)
+            setDimAmount(ReplyMetrics.DIM)
         }
         dialog.setOnDismissListener { scope.cancel() }
         dialog.show()
@@ -269,7 +268,7 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         currentNames = names
         topContainer.removeAllViews()
         if (stats.members.isEmpty()) {
-            topContainer.addView(caption("没有可统计的发言"))
+            topContainer.addView(kit.caption("没有可统计的发言"))
             return
         }
         val merged = LinkedHashMap<String, Int>()
@@ -281,12 +280,12 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
             displayedNames[member.name] = shown
             merged[shown] = (merged[shown] ?: 0) + member.count
         }
-        topContainer.addView(headerRow(), LinearLayout.LayoutParams(-1, theme.dp(24)))
+        topContainer.addView(headerRow(), LinearLayout.LayoutParams(-1, -2))
         val ordered = merged.entries.sortedByDescending { it.value }
         val percents = dev.jev.wechatmood.reply.GroupStatsCalculator.percents(ordered.map { it.value })
         ordered.forEachIndexed { index, entry ->
             topContainer.addView(tableRow(entry.key, "${entry.value}", "${percents[index]}%"),
-                LinearLayout.LayoutParams(-1, theme.dp(26)))
+                LinearLayout.LayoutParams(-1, -2))
         }
     }
 
@@ -319,47 +318,27 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
     private fun headerRow() = LinearLayout(activity).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        addView(TextView(activity).apply {
-            text = "成员"
-            textSize = 11f
-            setTextColor(theme.muted)
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        addView(TextView(activity).apply {
-            text = "条数"
-            textSize = 11f
-            setTextColor(theme.muted)
-            gravity = Gravity.END
-        }, LinearLayout.LayoutParams(theme.dp(56), -2))
-        addView(TextView(activity).apply {
-            text = "占比"
-            textSize = 11f
-            setTextColor(theme.muted)
-            gravity = Gravity.END
-        }, LinearLayout.LayoutParams(theme.dp(52), -2))
+        minimumHeight = theme.dp(24)
+        addView(theme.label("成员", ReplyMetrics.TEXT_CAPTION, theme.muted),
+            LinearLayout.LayoutParams(0, -2, 1f))
+        addView(theme.label("条数", ReplyMetrics.TEXT_CAPTION, theme.muted).apply { gravity = Gravity.END },
+            LinearLayout.LayoutParams(theme.dp(56), -2))
+        addView(theme.label("占比", ReplyMetrics.TEXT_CAPTION, theme.muted).apply { gravity = Gravity.END },
+            LinearLayout.LayoutParams(theme.dp(52), -2))
     }
 
     private fun tableRow(name: String, count: String, percent: String) = LinearLayout(activity).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        addView(TextView(activity).apply {
-            text = name
-            textSize = 13f
-            setTextColor(theme.ink)
+        minimumHeight = theme.dp(28)
+        addView(theme.label(name, ReplyMetrics.TEXT_BODY, theme.ink).apply {
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        addView(TextView(activity).apply {
-            text = count
-            textSize = 13f
-            setTextColor(theme.muted)
-            gravity = Gravity.END
-        }, LinearLayout.LayoutParams(theme.dp(56), -2))
-        addView(TextView(activity).apply {
-            text = percent
-            textSize = 13f
-            setTextColor(theme.muted)
-            gravity = Gravity.END
-        }, LinearLayout.LayoutParams(theme.dp(52), -2))
+        addView(theme.label(count, ReplyMetrics.TEXT_BODY, theme.muted).apply { gravity = Gravity.END },
+            LinearLayout.LayoutParams(theme.dp(56), -2))
+        addView(theme.label(percent, ReplyMetrics.TEXT_BODY, theme.muted).apply { gravity = Gravity.END },
+            LinearLayout.LayoutParams(theme.dp(52), -2))
     }
 
     /** 点成员看他自己最近说了什么，不展示全员明细。 */
@@ -372,12 +351,9 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         val span = if (member.firstAt > 0) {
             format.format(java.util.Date(member.firstAt)) + "–" + format.format(java.util.Date(member.lastAt))
         } else ""
-        android.app.AlertDialog.Builder(activity)
-            .setTitle("$shownName · ${member.count} 条")
-            .setMessage("活跃时段：${member.hours.joinToString("、") { "$it 点" }.ifBlank { "未知" }}\n" +
+        kit.info("$shownName · ${member.count} 条",
+            "活跃时段：${member.hours.joinToString("、") { "$it 点" }.ifBlank { "未知" }}\n" +
                 "发言范围：${span.ifBlank { "未知" }}\n\n$lines")
-            .setPositiveButton("关闭", null)
-            .show()
     }
 
     /**
@@ -410,52 +386,20 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
     }
 
     /** 分析板块卡片：点标题折叠展开。 */
-    private fun panelWith(label: String, body: TextView): LinearLayout {
-        val card = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(theme.dp(12), theme.dp(10), theme.dp(12), theme.dp(10))
-            background = theme.shape(theme.card, 14, theme.border)
-        }
-        val title = TextView(activity).apply {
-            text = label
-            textSize = 14f
-            setTextColor(theme.ink)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }
-        card.addView(title)
-        card.addView(body)
-        title.setOnClickListener {
-            body.visibility = if (body.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+    private fun panelWith(label: String, content: View): LinearLayout {
+        val card = kit.card()
+        val header = kit.body(label).apply { setTypeface(typeface, android.graphics.Typeface.BOLD) }
+        card.addView(header)
+        card.addView(content, LinearLayout.LayoutParams(-1, -2).apply { topMargin = theme.dp(4) })
+        header.setOnClickListener {
+            content.visibility = if (content.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         }
         return card
     }
 
     private fun panel(label: String, content: String, collapsed: Boolean = false): LinearLayout {
-        val card = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(theme.dp(12), theme.dp(10), theme.dp(12), theme.dp(10))
-            background = theme.shape(theme.card, 14, theme.border)
-        }
-        val title = TextView(activity).apply {
-            text = label
-            textSize = 14f
-            setTextColor(theme.ink)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }
-        val body = TextView(activity).apply {
-            this.text = content
-            textSize = 13f
-            setTextColor(theme.ink)
-            setPadding(0, theme.dp(4), 0, 0)
-            setLineSpacing(0f, 1.25f)
-        }
-        card.addView(title)
-        card.addView(body)
-        if (collapsed) body.visibility = View.GONE
-        title.setOnClickListener {
-            body.visibility = if (body.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-        }
-        return card
+        val body = kit.body(content)
+        return panelWith(label, body).also { if (collapsed) body.visibility = View.GONE }
     }
 
     /**
@@ -541,12 +485,7 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         Toast.makeText(activity, "已复制", Toast.LENGTH_SHORT).show()
     }
 
-    private fun filterPill(label: String, action: () -> Unit): TextView =
-        theme.action(label, quiet = true) { action() }.apply {
-            textSize = 12f
-            minHeight = theme.dp(34)
-            setPadding(theme.dp(8), 0, theme.dp(8), 0)
-        }
+    private fun filterPill(label: String, action: () -> Unit): TextView = kit.pill(label, action)
 
     /**
      * 切换筛选后必须重新查数据库：只重建界面会继续用旧数据，
@@ -561,46 +500,29 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
 
     private fun pickRange() {
         val values = StatsFilter.Range.values()
-        android.app.AlertDialog.Builder(activity).setTitle("分析时段")
-            .setItems(values.map { it.label }.toTypedArray()) { _, which ->
-                StatsFilter.range = values[which]
-                dev.jev.wechatmood.core.MoodLog.i("STATS_FILTER range=${StatsFilter.range}")
-                recreate()
-            }.setNegativeButton("取消", null).show()
+        kit.picker("分析时段", values.map { it.label }, values.indexOf(StatsFilter.range)) { which ->
+            StatsFilter.range = values[which]
+            dev.jev.wechatmood.core.MoodLog.i("STATS_FILTER range=${StatsFilter.range}")
+            recreate()
+        }
     }
 
     private fun pickLimit() {
         val options = listOf(10, 30, 50, 100, 0)
-        android.app.AlertDialog.Builder(activity).setTitle("消息条数")
-            .setItems(options.map { if (it == 0) "该时段全部" else "最近 $it 条" }.toTypedArray()) { _, which ->
-                StatsFilter.limit = options[which]
-                dev.jev.wechatmood.core.MoodLog.i("STATS_FILTER limit=${StatsFilter.limit}")
-                recreate()
-            }.setNegativeButton("取消", null).show()
+        kit.picker("消息条数", options.map { if (it == 0) "该时段全部" else "最近 $it 条" },
+            options.indexOf(StatsFilter.limit)) { which ->
+            StatsFilter.limit = options[which]
+            dev.jev.wechatmood.core.MoodLog.i("STATS_FILTER limit=${StatsFilter.limit}")
+            recreate()
+        }
     }
 
     private fun weight() = LinearLayout.LayoutParams(0, -2, 1f)
-    private fun title(text: String) = TextView(activity).apply {
-        this.text = text
-        textSize = 18f
-        setTextColor(theme.ink)
-        setTypeface(typeface, android.graphics.Typeface.BOLD)
-    }
-    private fun section(text: String) = TextView(activity).apply {
-        this.text = text
-        textSize = 12f
-        setTextColor(theme.muted)
-        setPadding(0, theme.dp(14), 0, theme.dp(4))
-    }
-    private fun caption(text: String) = TextView(activity).apply {
-        this.text = text
-        textSize = 12f
-        setTextColor(theme.muted)
-        setPadding(0, theme.dp(4), 0, 0)
-    }
     private fun number(value: String, label: String) = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER_HORIZONTAL
+        minimumHeight = theme.dp(ReplyMetrics.TAP)
+        setPadding(0, theme.dp(6), 0, theme.dp(6))
         addView(TextView(activity).apply {
             text = value
             textSize = 20f
@@ -609,7 +531,7 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         })
         addView(TextView(activity).apply {
             text = label
-            textSize = 11f
+            textSize = ReplyMetrics.TEXT_CAPTION
             setTextColor(theme.muted)
         })
     }

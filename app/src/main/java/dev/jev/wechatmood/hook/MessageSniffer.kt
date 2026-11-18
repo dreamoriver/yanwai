@@ -274,11 +274,14 @@ object MessageSniffer {
         val activity = active.get() ?: return null
         val scope = chatNodes(activity.window.decorView)
         val current = records(scope)
-        val talker = conversation(activity, scope, current) ?: return null
         val ancestors = generateSequence(view) { it.parent as? View }.toSet()
-        return current.filter { it.first in ancestors }.mapNotNull { it.second.metadata }
-            .filter { it.talker == talker && it.type == 49 && dev.jev.wechatmood.reply.ForwardDigest.isForward(it.content) }
-            .distinct().singleOrNull()
+        // 不限接收方向、也不依赖会话名：长按的 view 本身已经定位到消息。
+        val candidates = current.filter { it.first in ancestors }.mapNotNull { it.second.metadata }
+            .filter { it.type == 49 && dev.jev.wechatmood.reply.ForwardDigest.isForward(it.content) }
+            .distinct()
+        MoodLog.i("FORWARD_LOOKUP ancestors=${ancestors.size} rows=${current.size} matched=${candidates.size} " +
+            "types=" + current.filter { it.first in ancestors }.mapNotNull { it.second.metadata?.type }.distinct())
+        return candidates.singleOrNull()
     }
 
     /** 长按没出菜单时用：只记数量与哈希，不记聊天内容。 */

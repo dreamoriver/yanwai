@@ -93,7 +93,9 @@ object MessageMenu {
                         val view = param.args[1] as? View ?: return@runCatching
                         val input = MessageSniffer.inputForView(view)?.takeIf { ManualAnalysis.identity(it) != null }
                         val replyTarget = MessageSniffer.replyTargetForView(view)
-                        if (input == null && replyTarget == null) {
+                        // 合并转发不受接收方向限制，先取再看要不要继续，否则自己转发的内容既没摘要也没回复。
+                        val forward = MessageSniffer.forwardForView(view)
+                        if (input == null && replyTarget == null && forward == null) {
                             MoodLog.i("MESSAGE_MENU_NO_REPLY " + MessageSniffer.describeTarget(view))
                             return@runCatching
                         }
@@ -118,7 +120,6 @@ object MessageMenu {
                             val reply = add.invoke(menu, REPLY_ITEM_ID, "帮我回", icon) as? MenuItem
                             if (reply != null) targets[reply] = Target(WeakReference(view), reply = replyTarget)
                         }
-                        val forward = MessageSniffer.forwardForView(view)
                         if (forward != null) {
                             val digest = add.invoke(menu, FORWARD_ITEM_ID, "摘要", icon) as? MenuItem
                             if (digest != null) targets[digest] = Target(WeakReference(view), forward = forward)

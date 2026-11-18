@@ -164,4 +164,22 @@ class ForwardDigestTest {
         val message = requireNotNull(ForwardDigest.parse(raw))
         assertEquals("[聊天记录]李工在群里说要去广医", message.items[0].text)
     }
+
+    @Test fun `uinull 重复段被整段剥掉`() {
+        val filler = "uinull".repeat(120)
+        val raw = wrap("<recordinfo><title>群聊的聊天记录</title><desc>Sun: " + filler +
+            "全世界都在找李工</desc></recordinfo>")
+        val message = requireNotNull(ForwardDigest.parse(raw))
+        assertEquals("全世界都在找李工", message.items[0].text)
+    }
+
+    @Test fun `嵌套里层的 datadesc 不会漏`() {
+        val inner = "<recordinfo><datalist><dataitem datatype=\"1\"><datadesc>里层内容</datadesc>" +
+            "<sourcename>乙</sourcename></dataitem></datalist></recordinfo>"
+        val raw = wrap("<recordinfo><title>群聊的聊天记录</title><datalist count=\"2\">" +
+            "<dataitem datatype=\"17\"><datatitle>内层</datatitle><datadesc>[聊天记录]</datadesc>" +
+            "<recordxml>$inner</recordxml></dataitem></datalist></recordinfo>")
+        val message = requireNotNull(ForwardDigest.parse(raw))
+        assertTrue(message.items.any { it.text.contains("里层内容") })
+    }
 }

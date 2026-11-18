@@ -21,6 +21,8 @@ object ForwardDigest {
     private const val FILLER_MIN_LENGTH = 120
     private const val FILLER_MAX_PERIOD = 8
     private const val FILLER_PREFIX_MIN = 32
+    private val PLACEHOLDER = Regex("^\\[[^]]{1,6}]$")
+    private val DESC = Regex("<datadesc(?:\\s[^>]*)?>(.*?)</datadesc>", RegexOption.DOT_MATCHES_ALL)
     private val NOISE = Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u200B-\\u200F\\u2028\\u2029\\uFEFF]")
 
     data class Item(val type: Int, val sender: String, val text: String, val time: String, val nested: Boolean = false)
@@ -52,7 +54,12 @@ object ForwardDigest {
         collect(body, depth = 1, out = items, budget = { budget }, spend = { budget -= it },
             omitted = { omitted++ }, nested = { nested++ })
         if (items.isEmpty()) return null
-        return Message(tag(body, "title").decode(), tag(body, "isChatRoom") == "1", items, omitted, nested, truncatedRaw)
+        // 结构解析之外再兜底扫一遍所有 datadesc：四层嵌套时按 dataitem 配对容易漏，
+        // 漏掉的内容不该因为层级对不上就消失。
+        val merged = supplement(body, items)
+        dev.jev.wechatmood.core.MoodLog.i(
+            "FORWARD_DIGEST parsed=${items.size} merged=${merged.size} nested=$nested omitted=$omitted raw=${safe.length}")
+        return Message(tag(body, "title").decode(), tag(body, "isChatRoom") == "1", merged, omitted, nested, truncatedRaw)
     }
 
     private fun collect(
@@ -164,6 +171,26 @@ object ForwardDigest {
         if (cdata != null) return cdata
         // 少数包不带 CDATA，直接取 recordinfo。
         return Regex("""<recordinfo>.*</recordinfo>""", RegexOption.DOT_MATCHES_ALL).find(raw)?.value
+    }
+
+    /** 用全局 datadesc 补齐结构解析漏掉的条目，只按文本去重，不重复计算字数。 */
+    private fun supplement(raw: String, parsed: List<Item>): List<Item> {
+        if (parsed.size >= MAX_ITEMS) return parsed
+        val seen = parsed.mapTo(HashSet()) { it.text }
+        val extra = mutableListOf<Item>()
+        var room = MAX_ITEMS - parsed.size
+        for ((_, body) in dataItems(raw)) {
+            if (room <= 0) break
+            // 带 recordxml 的条目由结构解析递归处理，这里只补平铺项。
+            if (body.contains("<recordxml") || body.contains("<recordinfo") || body.contains("&lt;recordinfo")) continue
+            val match = DESC.find(body) ?: continue
+            val text = match.groupValues[1].decode().cleanNoise().trimFillerPrefix().stripFiller().take(MAX_ITEM_CHARS)
+            // 占位符（[聊天记录]、[图片]）不补，否则数量会虚增。
+            if (text.isBlank() || text.isFiller() || text.matches(PLACEHOLDER) || !seen.add(text)) continue
+            extra += Item(0, "", text, "", nested = true)
+            room--
+        }
+        return if (extra.isEmpty()) parsed else parsed + extra
     }
 
     /** 去掉不可打印字符与零宽填充，避免整屏噪声进摘要。 */

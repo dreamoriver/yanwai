@@ -11,7 +11,7 @@ package dev.jev.wechatmood.reply
  */
 object ForwardDigest {
     const val MAX_ITEMS = 300
-    const val MAX_ITEM_CHARS = 300
+    const val MAX_ITEM_CHARS = 150
     const val MAX_TOTAL_CHARS = 40000
     /** 原始 XML 上限：转发里夹带代码或超大卡片时，超过这个长度只处理前面的部分。 */
     const val MAX_RAW_CHARS = 512 * 1024
@@ -21,6 +21,8 @@ object ForwardDigest {
     private const val FILLER_MIN_LENGTH = 120
     private const val FILLER_MAX_PERIOD = 8
     private const val FILLER_PREFIX_MIN = 32
+    /** 任意 2 到 8 字符的片段连续重复 6 次以上，当作填充。 */
+    private val REPEAT = Regex("(.{2,8}?)\\1{5,}", setOf(RegexOption.DOT_MATCHES_ALL))
     private val PLACEHOLDER = Regex("^\\[[^]]{1,6}]$")
     private val DESC = Regex("<datadesc(?:\\s[^>]*)?>(.*?)</datadesc>", RegexOption.DOT_MATCHES_ALL)
     private val NOISE = Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u200B-\\u200F\\u2028\\u2029\\uFEFF]")
@@ -56,10 +58,11 @@ object ForwardDigest {
         if (items.isEmpty()) return null
         // 结构解析之外再兜底扫一遍所有 datadesc：四层嵌套时按 dataitem 配对容易漏，
         // 漏掉的内容不该因为层级对不上就消失。
-        val merged = supplement(body, items)
+        val merged = compress(supplement(body, items))
         dev.jev.wechatmood.core.MoodLog.i(
             "FORWARD_DIGEST parsed=${items.size} merged=${merged.size} nested=$nested omitted=$omitted raw=${safe.length}")
-        return Message(tag(body, "title").decode(), tag(body, "isChatRoom") == "1", merged, omitted, nested, truncatedRaw)
+        return Message(tag(body, "title").decode().cleanNoise().stripFiller(), tag(body, "isChatRoom") == "1",
+            merged, omitted, nested, truncatedRaw)
     }
 
     private fun collect(
@@ -90,7 +93,7 @@ object ForwardDigest {
             if (out.size >= MAX_ITEMS || budget() <= 0) { omitted(); return@forEach }
             val type = Regex("""datatype\s*=\s*"(\d+)"""").find(attributes)?.groupValues?.get(1)?.toIntOrNull() ?: 0
             var text = tag(itemBody, "datadesc").decode()
-            val sender = tag(itemBody, "sourcename").decode()
+            val sender = tag(itemBody, "sourcename").decode().cleanNoise().stripFiller()
             val time = tag(itemBody, "sourcetime").decode()
             // 公众号、视频、语音、表情这些类型，微信通常已经写成 [视频]/标题；为空时补个占位。
             if (text.isBlank()) {
@@ -173,17 +176,42 @@ object ForwardDigest {
         return Regex("""<recordinfo>.*</recordinfo>""", RegexOption.DOT_MATCHES_ALL).find(raw)?.value
     }
 
+    /**
+     * 压缩：同一人连续发言合并成一条，纯语气和纯表情丢掉。
+     * 长转发里这类内容占一半以上，压完输入更短，模型也更容易抓重点。
+     */
+    private fun compress(items: List<Item>): List<Item> {
+        val out = mutableListOf<Item>()
+        for (item in items) {
+            if (item.text.isBlank() || item.text.isFiller() || item.text.isChatter()) continue
+            val last = out.lastOrNull()
+            val sameSender = last != null && (item.sender.isBlank() || last.sender.isBlank() || last.sender == item.sender)
+            if (last != null && sameSender && last.text.length + item.text.length < MAX_ITEM_CHARS) {
+                out[out.lastIndex] = last.copy(text = last.text + "；" + item.text)
+            } else {
+                out += item
+            }
+        }
+        return out
+    }
+
+    /** 只有语气、表情或标点的短句，没有信息量。 */
+    internal fun String.isChatter(): Boolean {
+        val core = replace(Regex("[\\s\\p{Punct}，。！？、~～…：；]"), "")
+        if (core.isEmpty()) return true
+        if (core.length > 4) return false
+        return core.all { it in "哈呵嗯哦喔噢行好对是的在啊呀吧了呢收到来了去" }
+    }
+
     /** 用全局 datadesc 补齐结构解析漏掉的条目，只按文本去重，不重复计算字数。 */
     private fun supplement(raw: String, parsed: List<Item>): List<Item> {
         if (parsed.size >= MAX_ITEMS) return parsed
         val seen = parsed.mapTo(HashSet()) { it.text }
         val extra = mutableListOf<Item>()
         var room = MAX_ITEMS - parsed.size
-        for ((_, body) in dataItems(raw)) {
+        // 全局扫描：结构解析在四层嵌套时只切出外层几条，内层的 datadesc 全靠这里补。
+        for (match in DESC.findAll(raw)) {
             if (room <= 0) break
-            // 带 recordxml 的条目由结构解析递归处理，这里只补平铺项。
-            if (body.contains("<recordxml") || body.contains("<recordinfo") || body.contains("&lt;recordinfo")) continue
-            val match = DESC.find(body) ?: continue
             val text = match.groupValues[1].decode().cleanNoise().trimFillerPrefix().stripFiller().take(MAX_ITEM_CHARS)
             // 占位符（[聊天记录]、[图片]）不补，否则数量会虚增。
             if (text.isBlank() || text.isFiller() || text.matches(PLACEHOLDER) || !seen.add(text)) continue
@@ -202,26 +230,11 @@ object ForwardDigest {
      */
     internal fun String.stripFiller(): String {
         if (length < FILLER_PREFIX_MIN) return this
-        val out = StringBuilder(length)
-        var index = 0
-        while (index < length) {
-            var skipTo = -1
-            for (period in 2..FILLER_MAX_PERIOD) {
-                var end = index + period
-                if (end > length) continue
-                // 单字重复是语气（哈哈哈），不当填充。
-                if (substring(index, index + period).toSet().size <= 1) continue
-                if (regionMatches(index, this, index + period, period).not()) continue
-                var repeats = 1
-                while (end + period <= length && regionMatches(end - period, this, end, period)) {
-                    end += period
-                    repeats++
-                }
-                if (repeats * period >= FILLER_PREFIX_MIN) { skipTo = end; break }
-            }
-            if (skipTo > index) index = skipTo else out.append(this[index++])
+        return REPEAT.replace(this) { match ->
+            val unit = match.groupValues[1]
+            // 单字重复是语气（哈哈哈），不当填充。
+            if (unit.toSet().size <= 1) match.value else ""
         }
-        return out.toString()
     }
 
     /** 行首整段是固定周期重复（如 nullnull…）时剥掉，保留后面的正文。 */

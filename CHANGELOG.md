@@ -3,6 +3,12 @@
 基于 [YIRC99/yanwai](https://github.com/YIRC99/yanwai) 的本地改动，仅供自己使用。
 原仓库未声明开源许可证，因此不对外分发安装包。
 
+## 2.9.83
+
+修正发布签名
+- 同步仓库 main 上的 build.yml（带 keystore secrets）与 sync-upstream.yml，之前分支里的旧版没读签名 secrets，打出来是 debug 签名
+- 从这一版起恢复用自建密钥签名
+
 ## 2.9.82
 
 转发摘要清洗与回复上下文

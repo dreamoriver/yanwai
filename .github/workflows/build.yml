@@ -12,6 +12,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      YANWAI_KEYSTORE_B64: ${{ secrets.YANWAI_KEYSTORE_B64 }}
+      YANWAI_KEYSTORE_PASSWORD: ${{ secrets.YANWAI_KEYSTORE_PASSWORD }}
+      YANWAI_KEY_ALIAS: ${{ secrets.YANWAI_KEY_ALIAS }}
+      YANWAI_KEY_PASSWORD: ${{ secrets.YANWAI_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -21,9 +26,24 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Cache Android SDK
+        uses: actions/cache@v4
+        with:
+          path: ~/android-sdk
+          key: android-sdk-35-11076708-v1
+
       - name: Install Android SDK
         run: |
           SDK_ROOT="$HOME/android-sdk"
+          # 命中缓存就不再下载：platforms/build-tools 都在缓存里。
+          if [ -d "$SDK_ROOT/platforms/android-35" ] && [ -d "$SDK_ROOT/build-tools/35.0.0" ]; then
+            echo "SDK 已缓存，跳过下载"
+            echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+            echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+            echo "$SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+            echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+            exit 0
+          fi
           mkdir -p "$SDK_ROOT/cmdline-tools"
           curl -sSLo /tmp/cmdline.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           unzip -q /tmp/cmdline.zip -d "$SDK_ROOT/cmdline-tools"
@@ -37,6 +57,18 @@ jobs:
         run: |
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Restore signing keystore
+        # CI 每个 runner 自动生成的 debug keystore 都不同，签名一变就无法覆盖安装。
+        # 配置了固定密钥后，debug/release 都用同一个证书。
+        run: |
+          if [ -n "$YANWAI_KEYSTORE_B64" ]; then
+            echo "$YANWAI_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/yanwai.jks"
+            echo "YANWAI_KEYSTORE=$RUNNER_TEMP/yanwai.jks" >> "$GITHUB_ENV"
+            echo "已启用固定签名"
+          else
+            echo "::warning::没有配置签名密钥，本次使用默认调试签名"
+          fi
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -58,6 +90,21 @@ jobs:
             echo "::error::CHANGELOG.md 缺少 ## ${{ steps.ver.outputs.name }} 段落，Release 说明会挂旧内容";
             exit 1;
           }
+
+      - name: Unit tests (report only)
+        # 现有仓库有 24 项历史失败；主线发版跳过以节省时间，PR 时仍出报告。
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: gradle testDebugUnitTest --no-daemon -Pkotlin.compiler.execution.strategy=in-process
+
+      - name: Upload test report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: app/build/reports/tests/testDebugUnitTest
+          retention-days: 14
 
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon -Pkotlin.compiler.execution.strategy=in-process

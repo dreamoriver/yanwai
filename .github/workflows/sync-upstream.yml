@@ -1,0 +1,158 @@
+name: Sync upstream
+
+# 每天检查一次上游，作者有新提交就同步、测试、构建、发版。
+# 手动验证可以在 Actions 页面点 Run workflow。
+on:
+  schedule:
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/YIRC99/yanwai.git
+          git fetch --no-tags upstream main
+          echo "LOCAL=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "UPSTREAM=$(git rev-parse upstream/main)" >> "$GITHUB_ENV"
+
+      - name: Guard local-only commits
+        id: guard
+        run: |
+          # 本地可能有还没合进上游的修复，reset --hard 会直接把它们冲掉。
+          LOCAL_ONLY=$(git rev-list upstream/main..HEAD -- app gradle version.properties settings.gradle.kts build.gradle.kts gradle.properties)
+          if [ -n "$LOCAL_ONLY" ]; then
+            echo "::warning::本地有未合并到上游的提交，跳过自动同步以免覆盖：$(echo "$LOCAL_ONLY" | tr '\n' ' ')"
+            echo "local_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "local_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compare
+        id: cmp
+        if: steps.guard.outputs.local_only != 'true' 
+        run: |
+          # 自用仓库保留自己的 CHANGELOG 和 Actions 配置，所以只比较代码与版本文件。
+          if git diff --quiet upstream/main HEAD -- app gradle version.properties settings.gradle.kts build.gradle.kts gradle.properties; then
+            echo "代码与上游一致，跳过"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "上游有新内容：$LOCAL -> $UPSTREAM"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync code and version
+        if: steps.cmp.outputs.changed == 'true'
+        run: |
+          # 自用构建保留自己的 CHANGELOG 和 Actions 配置，其余跟随上游
+          cp CHANGELOG.md /tmp/CHANGELOG.local
+          cp -r .github /tmp/github.local
+          git reset --hard upstream/main
+          cp /tmp/CHANGELOG.local CHANGELOG.md
+          rm -rf .github && cp -r /tmp/github.local .github
+          VERSION=$(sed -n 's/^versionName=//p' version.properties)
+          CODE=$(sed -n 's/^versionCode=//p' version.properties)
+          python3 - "$VERSION" "$UPSTREAM" <<'PY'
+          import sys
+          version, sha = sys.argv[1], sys.argv[2][:8]
+          path = "CHANGELOG.md"
+          text = open(path, encoding="utf-8").read()
+          if f"## {version}" in text:
+              sys.exit(0)
+          entry = (
+              f"## {version}\n\n"
+              f"同步上游 main（{sha}）\n"
+              f"- 自动同步 YIRC99/yanwai 的最新提交，代码与上游一致\n"
+              f"- 单测与 Debug 构建通过后才发布\n\n"
+          )
+          idx = text.find("\n## ")
+          if idx < 0:
+              text = entry + text
+          else:
+              text = text[:idx + 1] + entry + text[idx + 1:]
+          open(path, "w", encoding="utf-8").write(text)
+          PY
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "CODE=$CODE" >> "$GITHUB_ENV"
+          echo "同步到上游 $UPSTREAM，版本 $VERSION ($CODE)"
+
+      - name: Set up JDK 17
+        if: steps.cmp.outputs.changed == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK
+        if: steps.cmp.outputs.changed == 'true'
+        run: |
+          SDK_ROOT="$HOME/android-sdk"
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          for i in 1 2 3; do
+            curl -sSLo /tmp/cmdline.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip && break
+            echo "下载失败，重试 $i"; sleep 10
+          done
+          unzip -q /tmp/cmdline.zip -d "$SDK_ROOT/cmdline-tools"
+          mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+      - name: Install SDK packages
+        if: steps.cmp.outputs.changed == 'true'
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        if: steps.cmp.outputs.changed == 'true'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Test and build
+        if: steps.cmp.outputs.changed == 'true'
+        run: |
+          gradle :app:testDebugUnitTest :app:assembleDebug \
+            --no-daemon -Pkotlin.compiler.execution.strategy=in-process
+
+      - name: Commit and push
+        if: steps.cmp.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "代码与上游一致，无需提交"
+          else
+            git commit -m "chore: 同步上游 $UPSTREAM（$VERSION）"
+            # 自用仓库的历史与上游不同源，首次同步后就能 fast-forward，强制推送以对齐上游历史。
+            git push --force-with-lease origin HEAD:main
+          fi
+
+      - name: Publish release
+        if: steps.cmp.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="dreamoriver/yanwai-build"
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/yanwai-${VERSION}-${CODE}.apk"
+          if gh release view "v${VERSION}" -R "$REPO" > /dev/null 2>&1; then
+            echo "v${VERSION} 已存在，只补传资产"
+            gh release upload "v${VERSION}" "dist/yanwai-${VERSION}-${CODE}.apk" -R "$REPO" --clobber
+          else
+            gh release create "v${VERSION}" "dist/yanwai-${VERSION}-${CODE}.apk" -R "$REPO" \
+              --title "言外 ${VERSION}" --notes-file CHANGELOG.md --target main
+          fi

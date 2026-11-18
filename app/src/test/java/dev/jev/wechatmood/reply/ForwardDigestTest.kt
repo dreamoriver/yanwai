@@ -104,7 +104,7 @@ class ForwardDigestTest {
 
     @Test fun `超过展开深度时只留占位`() {
         var body = "<recordinfo><title>第4层</title><datalist>" + item("丁", "最里") + "</datalist></recordinfo>"
-        repeat(3) { level ->
+        repeat(7) { level ->
             body = "<recordinfo><title>第${level}层</title><datalist>" + item("张三", "第${level}层正文") +
                 "<dataitem datatype=\"17\"><datatitle>下层</datatitle><datadesc>[聊天记录]</datadesc>" +
                 "<recordxml>${body}</recordxml></dataitem></datalist></recordinfo>"
@@ -155,5 +155,13 @@ class ForwardDigestTest {
         assertEquals(1, context.messages.size)
         assertTrue(context.messages[0].text.contains("合并转发"))
         assertTrue(context.messages[0].text.contains("明晚八点见"))
+    }
+
+    @Test fun `夹在中间的填充段也会被剥掉`() {
+        val filler = "null".repeat(40)
+        val raw = wrap("<recordinfo><title>群聊的聊天记录</title><desc>诺: " + filler +
+            "[聊天记录]" + filler + "李工在群里说要去广医</desc></recordinfo>")
+        val message = requireNotNull(ForwardDigest.parse(raw))
+        assertEquals("[聊天记录]李工在群里说要去广医", message.items[0].text)
     }
 }

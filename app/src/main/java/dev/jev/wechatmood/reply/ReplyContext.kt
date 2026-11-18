@@ -59,9 +59,9 @@ data class ReplyContext(val talker: String, val messages: List<ReplyMessage>, va
                             ForwardDigest.parse(record.content) else null
                         when {
                             forwarded != null -> "【合并转发：${forwarded.title.take(40)}】\n" +
-                                forwarded.items.take(12).joinToString("\n") { item ->
-                                    (if (item.sender.isBlank()) "" else item.sender + ": ") + item.text.take(80)
-                                }.take(600)
+                                forwarded.items.take(40).joinToString("\n") { item ->
+                                    (if (item.sender.isBlank()) "" else item.sender + ": ") + item.text.take(150)
+                                }.take(4000)
                             quotedText != null -> "【引用${quoted.displayName?.take(32).orEmpty()}：$quotedText】$own"
                             own.isNotBlank() -> own
                             else -> "【引用消息，内容未能解析】"

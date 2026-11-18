@@ -10,14 +10,14 @@ package dev.jev.wechatmood.reply
  * 嵌套的聊天记录只展开一层，再深的直接标注，避免一条消息把上下文撑爆。
  */
 object ForwardDigest {
-    const val MAX_ITEMS = 80
-    const val MAX_ITEM_CHARS = 200
-    const val MAX_TOTAL_CHARS = 12000
+    const val MAX_ITEMS = 300
+    const val MAX_ITEM_CHARS = 300
+    const val MAX_TOTAL_CHARS = 40000
     /** 原始 XML 上限：转发里夹带代码或超大卡片时，超过这个长度只处理前面的部分。 */
     const val MAX_RAW_CHARS = 512 * 1024
     /** datatype=17 是嵌套的聊天记录，内层完整 XML 在 <recordxml> 里。 */
     private const val DATATYPE_CHAT_RECORD = 17
-    private const val MAX_DEPTH = 3
+    private const val MAX_DEPTH = 6
     private const val FILLER_MIN_LENGTH = 120
     private const val FILLER_MAX_PERIOD = 8
     private const val FILLER_PREFIX_MIN = 32
@@ -32,7 +32,7 @@ object ForwardDigest {
             items.forEachIndexed { index, item ->
                 append(index + 1).append(". ")
                 if (item.sender.isNotBlank()) append(item.sender).append(": ")
-                append(item.text.cleanNoise()).append('\n')
+                append(item.text.cleanNoise().stripFiller()).append('\n')
             }
             if (omitted > 0) append("（另有 ").append(omitted).append(" 条未展开）\n")
         }.trim()
@@ -72,7 +72,7 @@ object ForwardDigest {
                 if (out.size >= MAX_ITEMS || budget() <= 0) { omitted(); return@forEach }
                 val sender = line.substringBefore(':', "").trim()
                 val text = line.substringAfter(':', line).trim()
-                    .cleanNoise().trimFillerPrefix().take(MAX_ITEM_CHARS)
+                    .cleanNoise().trimFillerPrefix().stripFiller().take(MAX_ITEM_CHARS)
                 if (text.isBlank() || text.isFiller()) { omitted(); return@forEach }
                 spend(text.length + sender.length)
                 out += Item(1, sender, text, "")
@@ -112,7 +112,7 @@ object ForwardDigest {
                 }
             }
             // 整屏重复字符（群友常发 uinull / 零宽填充）没有信息量，直接跳过，别占摘要开头。
-            val cut = text.cleanNoise().trimFillerPrefix().take(MAX_ITEM_CHARS)
+            val cut = text.cleanNoise().trimFillerPrefix().stripFiller().take(MAX_ITEM_CHARS)
             if (cut.isBlank() || cut.isFiller()) {
                 omitted()
                 return@forEach
@@ -168,6 +168,34 @@ object ForwardDigest {
 
     /** 去掉不可打印字符与零宽填充，避免整屏噪声进摘要。 */
     internal fun String.cleanNoise(): String = NOISE.replace(this, "").trim()
+
+    /**
+     * 去掉文本里任意位置的固定周期重复段（nullnull…、uinull…）。
+     * 填充不一定在开头，截图里就是「[聊天记录]」夹在两段填充中间。
+     */
+    internal fun String.stripFiller(): String {
+        if (length < FILLER_PREFIX_MIN) return this
+        val out = StringBuilder(length)
+        var index = 0
+        while (index < length) {
+            var skipTo = -1
+            for (period in 2..FILLER_MAX_PERIOD) {
+                var end = index + period
+                if (end > length) continue
+                // 单字重复是语气（哈哈哈），不当填充。
+                if (substring(index, index + period).toSet().size <= 1) continue
+                if (regionMatches(index, this, index + period, period).not()) continue
+                var repeats = 1
+                while (end + period <= length && regionMatches(end - period, this, end, period)) {
+                    end += period
+                    repeats++
+                }
+                if (repeats * period >= FILLER_PREFIX_MIN) { skipTo = end; break }
+            }
+            if (skipTo > index) index = skipTo else out.append(this[index++])
+        }
+        return out.toString()
+    }
 
     /** 行首整段是固定周期重复（如 nullnull…）时剥掉，保留后面的正文。 */
     internal fun String.trimFillerPrefix(): String {

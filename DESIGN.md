@@ -65,3 +65,91 @@
 - 选择器与只读详情使用自绘底部面板，不使用宿主 `AlertDialog`；行高随系统字体伸缩，固定高度只留给图标和圆环。
 - 状态始终是「文字 + 颜色」：成功绿、待完成琥珀、失败红，颜色不单独表达含义。
 - 分享图固定深色，配色与深色主题同值，圆角按 360dp 宽度基准换算。
+
+## 界面分层：先认清在哪画（2.9.97）
+
+动手改界面前先判断动的是哪一层，四层规则不一样，不要混用。
+
+### 一、贴宿主（微信原生控件）
+
+菜单项、设置入口行、聊天气泡装饰、输入框上方的横条。
+
+- 只借宿主已有控件和样式（`selectableItemBackground`、宿主字号与主题），不自己画背景、不自己定字号。
+- 相关文件：`MessageMenu`、`HostUi`、`HostSettingsEntry`、`ReplyPlusRow`、`BubbleDecorator`。
+- 这一类塞自己的圆角卡片会立刻跟微信界面割裂。
+
+### 二、自绘窗口（微信里弹出来的面板）
+
+统计、合并转发摘要、附加面板、回复抽屉、选择器、只读详情。
+
+- 只用 `PanelKit` + `ReplyTheme`，尺寸取自 `ReplyMetrics`。
+- 禁止 `android.app.AlertDialog`；禁止窗口里写色值（`Color.parseColor` 只留在色板定义处）；禁止 `textSize = 15f` 这种字面量。
+- 高度一律 `wrap_content` + `minHeight`，固定高度只留给图标和圆环。
+
+### 三、独立 App 页面
+
+`MainActivity` 与 `res/layout/*.xml`。
+
+- 只用 XML + `Yanwai.*` style + `colors.xml`，不在 Kotlin 里 new View。
+
+### 四、自绘控件
+
+`ReplyLoadingView`、`FrostedAnalysisView`、`EmotionRingSpan`。
+
+- 只负责画，颜色由调用方传，尺寸由调用方给，自己不决定排版。
+
+## 新窗口照抄这段模板
+
+```kotlin
+internal class XxxUi(private val activity: Activity) {
+    private val kit = PanelKit(activity)
+    private val theme = kit.theme
+    private var dialog: Dialog? = null
+
+    fun show() {
+        val dialog = kit.sheet()            // 贴底、透明底、0.32 遮罩
+        val root = kit.root()               // 22dp 圆角 + 细边框
+        val column = kit.content(root)      // 20dp 页边距
+        column.addView(kit.heading("标题"))                     // 18sp 粗体
+        column.addView(kit.caption("一行说明"))                  // 12sp 辅助
+        column.addView(kit.sectionLabel("分区"))                 // 12sp 主色加粗
+        column.addView(kit.body("正文"))                         // 14sp
+        column.addView(kit.pill("时段 · 最近 24 小时") { })      // 48dp 胶囊按钮
+        column.addView(kit.itemRow("条目", "说明") { })          // 14dp 卡片行
+        column.addView(kit.status("失败原因", PanelTone.ERROR))
+        column.addView(theme.action("确定", primary = true) { })
+        column.addView(theme.action("取消", quiet = true) { dialog.dismiss() })
+        this.dialog = dialog
+        dialog.setContentView(root)
+        dialog.window?.setLayout(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        dialog.show()
+    }
+}
+```
+
+`PanelKit` 现有零件：
+
+| 方法 | 用途 |
+|---|---|
+| `sheet()` | 底部面板外壳：透明底、贴底、0.32 遮罩 |
+| `root()` / `content(root)` | 面板根（22dp 圆角 + 边框）与 20dp 内边距容器 |
+| `heading` / `caption` / `sectionLabel` / `body` | 18sp 标题 / 12sp 说明 / 12sp 主色分区 / 14sp 正文 |
+| `card()` | 14dp 圆角卡片容器 |
+| `itemRow(标题, 说明, onClick)` | 带箭头的条目行，48dp 起 |
+| `pill(文字, onClick)` | 胶囊筛选按钮 |
+| `optionRow(文字, 选中, onClick)` | 选择器选项行 |
+| `picker(标题, 选项, 选中索引, onPick)` | 底部选择器 |
+| `info(标题, 正文)` | 只读详情 |
+| `loading()` | 26dp 圆环加载行，用 `showLoading("文案")` 开关 |
+| `status(文字, PanelTone)` | 状态行（NEUTRAL / SUCCESS / WARNING / ERROR） |
+| `divider()` | 1px 分隔线 |
+
+## 还有几条硬规矩
+
+- 窗口里只做展示和收集，不直接查库、不直接发网络请求；数据从 `reply/`、`core/` 的封装层取。
+- 状态永远是「文字 + 颜色」，颜色不单独表意。
+- 沿用系统字体缩放：行高随文字长，不写死 dp 高度。
+- 深色只用 `theme.*` 取色，窗口里不写色值。
+- 改完自检：`sh tools/check-ui-style.sh`，会挑出 hook 里写死的字号、色值和 AlertDialog。
+

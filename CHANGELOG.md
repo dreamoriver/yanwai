@@ -3,6 +3,13 @@
 基于 [YIRC99/yanwai](https://github.com/YIRC99/yanwai) 的本地改动，仅供自己使用。
 原仓库未声明开源许可证，因此不对外分发安装包。
 
+## 2.9.97
+
+把界面规范写进仓库（只有文档与自检脚本，不改界面）
+- DESIGN.md 新增「界面分层」：贴宿主、自绘窗口、独立 App、自绘控件四层各自的规则，并附一份新窗口模板与 PanelKit 零件表
+- AGENTS.md 加一条：动界面前先读这两节，改完跑自检
+- 新增 tools/check-ui-style.sh：拦自绘窗口里的宿主 AlertDialog 与临时色值，列出建议改的写死字号；ReplyHostUi／HostUi 的 AlertDialog 记作已知欠账
+
 ## 2.9.96
 
 切换时段和条数不再闪一下

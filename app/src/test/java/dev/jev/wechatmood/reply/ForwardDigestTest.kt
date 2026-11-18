@@ -122,4 +122,21 @@ class ForwardDigestTest {
         val message = requireNotNull(ForwardDigest.parse(raw))
         assertEquals("正常内容", message.items[0].text)
     }
+
+    @Test fun `整屏填充字符被跳过`() {
+        val filler = "uinull".repeat(200)
+        val raw = wrap("<recordinfo><title>群聊的聊天记录</title><datalist>" +
+            item("张三", filler) + item("李四", "正常内容") + "</datalist></recordinfo>")
+        val message = requireNotNull(ForwardDigest.parse(raw))
+        assertEquals(1, message.items.size)
+        assertEquals("正常内容", message.items[0].text)
+        assertTrue(message.omitted >= 1)
+    }
+
+    @Test fun `零宽字符与不可打印字符被清掉`() {
+        val raw = wrap("<recordinfo><title>群聊的聊天记录</title><datalist>" +
+            item("张三", "前面\u200B\u200C后面") + "</datalist></recordinfo>")
+        val message = requireNotNull(ForwardDigest.parse(raw))
+        assertEquals("前面后面", message.items[0].text)
+    }
 }

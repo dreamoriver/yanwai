@@ -18,6 +18,9 @@ object ForwardDigest {
     /** datatype=17 是嵌套的聊天记录，内层完整 XML 在 <recordxml> 里。 */
     private const val DATATYPE_CHAT_RECORD = 17
     private const val MAX_DEPTH = 3
+    private const val FILLER_MIN_LENGTH = 120
+    private const val FILLER_MAX_PERIOD = 8
+    private val NOISE = Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u200B-\\u200F\\u2028\\u2029\\uFEFF]")
 
     data class Item(val type: Int, val sender: String, val text: String, val time: String, val nested: Boolean = false)
     data class Message(val title: String, val chatroom: Boolean, val items: List<Item>, val omitted: Int, val nested: Int,
@@ -28,7 +31,7 @@ object ForwardDigest {
             items.forEachIndexed { index, item ->
                 append(index + 1).append(". ")
                 if (item.sender.isNotBlank()) append(item.sender).append(": ")
-                append(item.text).append('\n')
+                append(item.text.cleanNoise()).append('\n')
             }
             if (omitted > 0) append("（另有 ").append(omitted).append(" 条未展开）\n")
         }.trim()
@@ -105,7 +108,12 @@ object ForwardDigest {
                     text = "[聊天记录]"
                 }
             }
-            val cut = text.take(MAX_ITEM_CHARS)
+            val cut = text.take(MAX_ITEM_CHARS).cleanNoise()
+            // 整屏重复字符（群友常发 uinull / 零宽填充）没有信息量，直接跳过，别占摘要开头。
+            if (cut.isFiller()) {
+                omitted()
+                return@forEach
+            }
             spend(cut.length + sender.length)
             out += Item(type, sender, cut, time, depth > 1)
         }
@@ -153,6 +161,25 @@ object ForwardDigest {
         if (cdata != null) return cdata
         // 少数包不带 CDATA，直接取 recordinfo。
         return Regex("""<recordinfo>.*</recordinfo>""", RegexOption.DOT_MATCHES_ALL).find(raw)?.value
+    }
+
+    /** 去掉不可打印字符与零宽填充，避免整屏噪声进摘要。 */
+    internal fun String.cleanNoise(): String = NOISE.replace(this, "").trim()
+
+    /** 长且按固定短周期重复的文本基本是刷屏填充，例如 uinulluinull…；正常的重复语气词不在此列。 */
+    internal fun String.isFiller(): Boolean {
+        val text = cleanNoise()
+        if (text.length < FILLER_MIN_LENGTH) return false
+        if (text.toSet().size <= 1) return false
+        val sample = text.take(1200)
+        for (period in 2..FILLER_MAX_PERIOD) {
+            var repeating = true
+            for (index in period until sample.length) {
+                if (sample[index] != sample[index % period]) { repeating = false; break }
+            }
+            if (repeating) return true
+        }
+        return false
     }
 
     /** 同名标签可嵌套（recordxml 里还有 recordxml），必须按深度配对，不能用非贪婪正则。 */

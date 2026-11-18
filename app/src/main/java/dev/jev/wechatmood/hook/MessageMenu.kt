@@ -120,7 +120,7 @@ object MessageMenu {
                         }
                         val forward = MessageSniffer.forwardForView(view)
                         if (forward != null) {
-                            val digest = add.invoke(menu, FORWARD_ITEM_ID, "摘要这条转发", icon) as? MenuItem
+                            val digest = add.invoke(menu, FORWARD_ITEM_ID, "摘要", icon) as? MenuItem
                             if (digest != null) targets[digest] = Target(WeakReference(view), forward = forward)
                         }
                     }.onFailure { MoodLog.e("MESSAGE_MENU_BUILD_FAILED 无法添加翻译意图菜单", it) }

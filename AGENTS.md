@@ -7,3 +7,4 @@
 - Validate code changes with the relevant offline tests and a Debug build. Use `--no-daemon -Pkotlin.compiler.execution.strategy=in-process`; leave device UI testing to the user unless explicitly requested.
 - For a long implementation task, make a scoped local commit before finishing. Do not push or publish unless asked. Check that no project server or compilation process was left running.
 - 动界面之前先读 `DESIGN.md` 的「界面分层」与「微信内面板零件」两节：微信内弹出的窗口一律用 `PanelKit` + `ReplyTheme`（圆角/触控/字号取 `ReplyMetrics`），贴宿主的入口（菜单项、设置行、横条）不自绘样式，独立 App 走 XML 与 `Yanwai.*`；改完跑 `sh tools/check-ui-style.sh`。
+- 本机打包、覆盖安装、重启微信与发版的完整命令和坑见 `docs/LOCAL_BUILD.md`；改流程时同步更新它。

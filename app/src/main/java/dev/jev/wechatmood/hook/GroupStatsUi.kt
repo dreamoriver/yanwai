@@ -270,6 +270,8 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         // 数据库里有名字优先用；没有就用原始名字。只要不是空白就显示，截断即可。
         val fromDb = names[raw]?.let { dev.jev.wechatmood.core.TextClean.plain(it).trim() }?.takeIf { it.isNotEmpty() }
         val clean = (fromDb ?: raw).trim()
+        // 数据库里缺失的字段会写 null / uinull，那不是名字。
+        if (clean.isEmpty() || clean.equals("null", true) || clean.equals("uinull", true)) return null
         // 空白、零宽、格式控制符都算「没有名字」，避免表格里出现空行。
         // 只把「真的能看见」的字符算名字：字母、数字、标点、符号。
         // 但 U+3164、U+2800 这类字符虽然属于「字母/符号」，渲染出来是空白，必须单独排除。
@@ -368,26 +370,38 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         }
     }.trim()
 
-    /** 群聊转述的提示词：一段口语讲完，不分板块、不给建议，写法沿用合并转发摘要。 */
+    /**
+     * 群聊转述的提示词：先概括、再挑事举例、最后有梗收尾，写法照合并转发摘要。
+     * 素材里的 speaker 已经换成昵称，模型不该再看到 wxid。
+     */
     private val summaryPrompt = """
-        你在一个微信群里蹲了一阵子，现在跟旁边的人随口讲这个群最近在聊什么。
+        你在一个微信群里蹲了一阵子，现在跟旁边的人聊起这个群最近在干嘛。
 
-        用一段大白话说清楚：这帮人主要在聊什么、谁在带节奏、有没有抬杠或者玩梗、最后有没有结果。
-        有什么说什么，别凑内容。
+        按这个顺序写，分三段，段与段之间空一行：
+        第一段：一两句话概括这帮人最近主要在折腾什么，顺带一句你对他们状态的感觉（活跃、水、跑题、互相抬杠，挑一个说得准的）。
+        第二段：挑两到三件最有意思、最具体的事，说清是谁做的、说了什么。挑有画面感或者好笑的，不要按时间顺着讲。
+        第三段：一句收尾。可以是吐槽、可以埋个后续的梗，也可以一句话给这帮人定性。要有意思，但别喊口号。
 
         说话方式：
         - 短句为主，可以有半截话，像边想边说。
         - 不要「首先、其次、最后」「虽然、但是」「不仅、而且」这类连接词，
           也不要「综上所述」「总而言之」「值得一提的是」「值得注意的是」。
-        - 不分点、不编号、不加小标题、不用 Markdown，不写「群氛围」「成员角色」「沟通建议」这种分析标题。
-        - 讲完就停，不要结尾给建议，也不要拔高讲道理。
+        - 不分点、不编号、不加小标题、不用 Markdown、不用 emoji 当标题，
+          不写「群氛围」「成员角色」「沟通建议」这种分析标题。
+        - 不要按时间一条条复述消息，那是记流水账；只挑值得说的。
+        - 引用的原话必须真的在消息里出现过，不要编。
         - 群友的昵称照原样说，别人的话别改写成书面语。
-        - 如果只是普通闲聊，就照实说在聊什么，别硬套冲突，也别总结出什么群体规律。
+        - 如果只是普通闲聊没什么事，就照实说在聊什么，别硬编冲突，也别总结出什么群体规律。
         - 写成 [图片] [语音] 的只当占位，不要猜内容。
         - 不复述统计数字，不评价这个群好还是不好。
-        - 整段不超过 150 字、最多 6 句。
+        - 全文 300 字左右，最多三段。
 
-        只输出这段转述。
+        结构示例（只说明怎么组织，内容不要照搬）：
+        这帮人最近没干正事，全在折腾刷机，从模块冲突聊到开机卡在 logo，气氛是一边互相鼓励一边互相劝退。
+        最有意思的是老王，前脚说「再刷一次就退群」，后脚又贴了个新版本；小张在旁边专门泼冷水，「你上次也是这么说的」。
+        最后谁也没真刷，话题拐到外卖点什么去了，倒也挺和谐。
+
+        只输出这三段。
     """.trimIndent()
 
     /** 一次请求拿到一段转述。 */
@@ -401,9 +415,21 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         check(current.isConfigured) {
             if (!ModulePrefs.bridgeAvailable) "设置服务未连接：先打开一次言外再回来分析" else "先在言外「回复」里配置模型"
         }
-        val sample = context.messages.takeLast(30).joinToString("\n") { "${it.speaker}: ${it.text.take(60)}" }
+        // speaker 是 wxid 或微信号，喂给模型之前换成群里的显示名；
+        // 查不到的按出现顺序编成「群友 N」，避免整段转述里全是 wxid。
+        val rawSpeakers = context.messages.map { it.speaker }.distinct()
+        val resolved = runCatching { ReplyDatabaseHistory.displayNames(rawSpeakers) }.getOrDefault(emptyMap())
+        val labels = LinkedHashMap<String, String>()
+        fun speakerLabel(raw: String): String = labels.getOrPut(raw) {
+            val fromDb = resolved[raw]?.let { TextClean.plain(it).trim() }
+            fromDb?.takeIf { it.isNotEmpty() && !it.equals("null", true) }
+                ?: raw.takeIf { !it.startsWith("wxid") && !it.matches(Regex("[A-Za-z0-9_-]{14,}")) }
+                ?: "群友${labels.size + 1}"
+        }
+        val sample = context.messages.takeLast(35)
+            .joinToString("\n") { "${speakerLabel(it.speaker)}: ${it.text.take(80)}" }
         val client = ReplyHttpClient()
-        var limit = 1500
+        var limit = 3000
         repeat(2) { attempt ->
             val payload = JSONObject().put("model", current.model).put("stream", false)
                 .put("max_tokens", limit).put("temperature", 0.35)
@@ -423,10 +449,10 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
                     content
                 })
             }
-            val clean = TextClean.plain(raw).take(600)
+            val clean = TextClean.plain(raw).take(900)
             dev.jev.wechatmood.core.MoodLog.i("STATS_AI_ALL attempt=${attempt + 1} chars=${clean.length}")
             if (clean.isNotBlank()) return clean
-            limit = 2000
+            limit = 4000
         }
         throw IllegalStateException("模型两次都没返回正文，换一个非推理模型试试")
     }

@@ -159,36 +159,13 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         body.addView(analysisBox, LinearLayout.LayoutParams(-1, -2).apply { topMargin = theme.dp(12) })
         analysisText = ""
 
-        fun showAnalysis(text: String) {
-            analysisText = text
-            analysisBox.removeAllViews()
-            analysisBox.visibility = View.VISIBLE
-            val parsed = splitSections(text)
-            // 模型没按标签写时，本地按句子切成几块，至少不是一整段。
-            val sections = parsed.ifEmpty {
-                val sentences = text.split("。", "！", "？").map { it.trim() }.filter { it.isNotEmpty() }
-                sentences.chunked(2).mapIndexed { index, chunk ->
-                    "要点 ${index + 1}" to (chunk.joinToString("。") + "。")
-                }
-            }
-            if (sections.isEmpty()) {
-                analysisBox.addView(panel("分析", text))
-                return
-            }
-            sections.forEachIndexed { index, (label, content) ->
-                // 默认只展开前两块，其余折起来，避免一屏全是字。
-                val card = panel(label, content, collapsed = index >= 2)
-                analysisBox.addView(card, LinearLayout.LayoutParams(-1, -2).apply { topMargin = theme.dp(8) })
-            }
-        }
-
         lateinit var aiButton: TextView
         aiButton = theme.action("让 AI 说说这群在聊什么", primary = true) {
             aiButton.isEnabled = false
             aiButton.text = "正在分析…"
             analysisBox.visibility = View.VISIBLE
             analysisBox.removeAllViews()
-            analysisBox.addView(panelWith("AI 观察", kit.loading().apply { showLoading("正在分析最近聊天…") }),
+            analysisBox.addView(panelWith("群里在聊什么", kit.loading().apply { showLoading("正在分析最近聊天…") }),
                 LinearLayout.LayoutParams(-1, -2).apply { topMargin = theme.dp(8) })
             scope.launch {
                 val text = runCatching { analyzeAll(context) }.getOrElse { error ->
@@ -200,7 +177,7 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
                 analysisText = text
                 analysisBox.removeAllViews()
                 val content = kit.body(shown).apply { if (failed) setTextColor(theme.error) }
-                analysisBox.addView(panelWith("AI 观察", content),
+                analysisBox.addView(panelWith("群里在聊什么", content),
                     LinearLayout.LayoutParams(-1, -2).apply { topMargin = theme.dp(8) })
                 aiButton.text = "重新分析"
                 aiButton.isEnabled = true
@@ -356,35 +333,6 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
                 "发言范围：${span.ifBlank { "未知" }}\n\n$lines")
     }
 
-    /**
-     * 按标签把分析拆成板块。模型经常不换行，所以按关键词出现的位置切，
-     * 而不是按行切；没出现任何标签就返回空，交给句子兜底。
-     */
-    private fun splitSections(text: String): List<Pair<String, String>> {
-        val labels = listOf("氛围" to "群氛围", "话题" to "核心话题", "角色" to "成员角色",
-            "互动" to "互动关系", "风险" to "风险提示", "建议" to "沟通建议")
-        val hits = mutableListOf<Triple<Int, Int, Pair<String, String>>>()
-        for ((key, label) in labels) {
-            val regex = Regex("[【\\[]?$key[】\\]]?")
-            var match = regex.find(text)
-            while (match != null) {
-                hits += Triple(match.range.first, match.range.last + 1, key to label)
-                match = regex.find(text, match.range.last + 1)
-            }
-        }
-        if (hits.isEmpty()) return emptyList()
-        val sorted = hits.sortedBy { it.first }
-        val result = mutableListOf<Pair<String, String>>()
-        for ((index, hit) in sorted.withIndex()) {
-            val start = hit.second
-            val end = sorted.getOrNull(index + 1)?.first ?: text.length
-            if (end <= start) continue
-            val body = text.substring(start, end).trim().trimStart('：', ':', '，', ' ')
-            if (body.isNotBlank()) result += hit.third.second to body
-        }
-        return result
-    }
-
     /** 分析板块卡片：点标题折叠展开。 */
     private fun panelWith(label: String, content: View): LinearLayout {
         val card = kit.card()
@@ -395,11 +343,6 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
             content.visibility = if (content.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         }
         return card
-    }
-
-    private fun panel(label: String, content: String, collapsed: Boolean = false): LinearLayout {
-        val body = kit.body(content)
-        return panelWith(label, body).also { if (collapsed) body.visibility = View.GONE }
     }
 
     /**
@@ -425,17 +368,29 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         }
     }.trim()
 
-    /** 六个板块分开问，避免模型把内容揉成一段。 */
-    private val sections = listOf(
-        "群氛围" to "用两句话描述这个微信群的聊天风格和情绪走向：是互损玩梗、轻松闲聊还是公事公办。不要复述统计数字。",
-        "核心话题" to "用两句话说这群最近在聊什么，归到日常闲聊、工作业务、生活琐事、八卦吐槽、事务通知其中一类。",
-        "成员角色" to "用两句话说谁在发起话题、谁在接话、谁基本潜水。只依据给出的消息，不编造。",
-        "互动关系" to "用两句话说成员之间的互动特点，有没有明显的小圈子。",
-        "风险提示" to "用一句话说有没有争议、敏感表述或负面情绪，没有就直接说没有。",
-        "沟通建议" to "用一句话说结合这个群的调性，接下来适合聊什么。",
-    )
+    /** 群聊转述的提示词：一段口语讲完，不分板块、不给建议，写法沿用合并转发摘要。 */
+    private val summaryPrompt = """
+        你在一个微信群里蹲了一阵子，现在跟旁边的人随口讲这个群最近在聊什么。
 
-    /** 一次请求拿到六段观察，避免六次往返。 */
+        用一段大白话说清楚：这帮人主要在聊什么、谁在带节奏、有没有抬杠或者玩梗、最后有没有结果。
+        有什么说什么，别凑内容。
+
+        说话方式：
+        - 短句为主，可以有半截话，像边想边说。
+        - 不要「首先、其次、最后」「虽然、但是」「不仅、而且」这类连接词，
+          也不要「综上所述」「总而言之」「值得一提的是」「值得注意的是」。
+        - 不分点、不编号、不加小标题、不用 Markdown，不写「群氛围」「成员角色」「沟通建议」这种分析标题。
+        - 讲完就停，不要结尾给建议，也不要拔高讲道理。
+        - 群友的昵称照原样说，别人的话别改写成书面语。
+        - 如果只是普通闲聊，就照实说在聊什么，别硬套冲突，也别总结出什么群体规律。
+        - 写成 [图片] [语音] 的只当占位，不要猜内容。
+        - 不复述统计数字，不评价这个群好还是不好。
+        - 整段不超过 150 字、最多 6 句。
+
+        只输出这段转述。
+    """.trimIndent()
+
+    /** 一次请求拿到一段转述。 */
     private suspend fun analyzeAll(context: ReplyContext): String {
         val settings = ModulePrefs.replySettings()
         if (!settings.isConfigured) {
@@ -448,15 +403,12 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
         }
         val sample = context.messages.takeLast(30).joinToString("\n") { "${it.speaker}: ${it.text.take(60)}" }
         val client = ReplyHttpClient()
-        var limit = 3000
+        var limit = 1500
         repeat(2) { attempt ->
             val payload = JSONObject().put("model", current.model).put("stream", false)
-                .put("max_tokens", limit).put("temperature", 0.6)
+                .put("max_tokens", limit).put("temperature", 0.35)
                 .put("messages", JSONArray()
-                    .put(JSONObject().put("role", "system").put("content",
-                        "你在读一个微信群。按六个板块写观察，每块单独一行，分别以【氛围】【话题】【角色】【互动】【风险】【建议】开头，" +
-                            "每块不超过 60 字。要写出这个群的具体风格、提到的人说了什么，不要流水账，不要复述统计数字，" +
-                            "不要 Markdown，不要星号和编号。只用给出的消息，不编造。"))
+                    .put(JSONObject().put("role", "system").put("content", summaryPrompt))
                     .put(JSONObject().put("role", "user").put("content",
                         "统计：${stats.lines().joinToString("；")}\n最近消息：\n$sample")))
             val raw = withContext(Dispatchers.IO) {
@@ -471,10 +423,10 @@ internal class GroupStatsUi(private val activity: Activity, private val context:
                     content
                 })
             }
-            val clean = TextClean.plain(raw).take(1200)
+            val clean = TextClean.plain(raw).take(600)
             dev.jev.wechatmood.core.MoodLog.i("STATS_AI_ALL attempt=${attempt + 1} chars=${clean.length}")
             if (clean.isNotBlank()) return clean
-            limit = 4000
+            limit = 2000
         }
         throw IllegalStateException("模型两次都没返回正文，换一个非推理模型试试")
     }

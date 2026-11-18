@@ -4,6 +4,8 @@ import android.app.Activity
 import android.app.Application
 import android.app.Instrumentation
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XC_MethodHook
@@ -22,13 +24,22 @@ class HookEntry : IXposedHookLoadPackage {
     private var installed = false
     private var failedAnnounced = false
 
+    private companion object {
+        /** 主线程迟迟不空闲时，最多等这么久就先装，保证功能不丢。 */
+        const val IDLE_FALLBACK_MS = 6000L
+    }
+
     override fun handleLoadPackage(param: XC_LoadPackage.LoadPackageParam) {
         if (param.packageName != "com.tencent.mm" || param.processName != "com.tencent.mm") return
         MoodLog.frameworkSink = { XposedBridge.log(it) }
         XposedBridge.log("WeChatMood ${BuildConfig.VERSION_NAME}: entered WeChat main process")
         XposedHelpers.findAndHookMethod(Application::class.java, "attach", Context::class.java,
             object : XC_MethodHook() {
-                override fun afterHookedMethod(p: MethodHookParam) { initialize(p.args[0] as Context) }
+                override fun afterHookedMethod(p: MethodHookParam) {
+                    // 首帧之前不抢主线程：WeKit 这类重模块同时挂微信时，两边的初始化叠加会把
+                    // 冷启动推过系统 5 秒阈值，微信被判「surface 未绘制」直接黑屏。
+                    scheduleInitialize(p.args[0] as Context)
+                }
             })
         // Covers module loaders that attach after Application.attach has already run.
         XposedBridge.hookAllMethods(Instrumentation::class.java, "callActivityOnResume", object : XC_MethodHook() {
@@ -53,6 +64,30 @@ class HookEntry : IXposedHookLoadPackage {
                 (p.args.firstOrNull() as? Activity)?.let { MessageSniffer.pause(it) }
             }
         })
+    }
+
+    /**
+     * 等主线程空闲（首帧画完）再装 hook。
+     *
+     * 和 WeKit 这类同样在启动路径上装大量 hook 的模块共存时，双方初始化时间相加会超过
+     * 系统的「surface 未绘制」阈值，微信冷启动直接黑屏。让出首帧窗口就能同时保留两边功能；
+     * 6 秒兜底避免极端情况下永远不装。
+     */
+    private fun scheduleInitialize(context: Context) {
+        val main = Looper.getMainLooper()
+        val task = Runnable {
+            MoodLog.i("HOOK_INIT_IDLE 主线程空闲，开始安装")
+            initialize(context)
+        }
+        if (Looper.myLooper() == main) {
+            main.queue.addIdleHandler {
+                task.run()
+                false
+            }
+        } else {
+            Handler(main).post { scheduleInitialize(context) }
+        }
+        Handler(main).postDelayed({ if (!installed) task.run() }, IDLE_FALLBACK_MS)
     }
 
     @Synchronized private fun initialize(context: Context) {

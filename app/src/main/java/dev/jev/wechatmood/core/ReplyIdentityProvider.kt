@@ -24,17 +24,19 @@ object ReplyIdentityProvider {
                 override fun query(sql: String, args: List<String>): String? = db.rawQuery(sql, args.toTypedArray()).use {
                     if (it.moveToFirst()) it.getString(0) else null
                 }
+                override fun queryRows(sql: String, args: List<String>): List<String> =
+                    db.rawQuery(sql, args.toTypedArray()).use { cursor ->
+                        val rows = ArrayList<String>(cursor.count)
+                        while (cursor.moveToNext()) cursor.getString(0)?.let { rows.add(it) }
+                        rows
+                    }
                 override fun close() = db.close()
             }).also { store = it }
         } catch (error: Exception) { db.close(); throw error }
     }
     /** 清空所有联系人的关系档案（App 进程内直接调用）。 */
     @Synchronized fun clearAllFacts(context: Context) {
-        val db = SQLiteDatabase.openOrCreateDatabase(File(context.noBackupFilesDir, "reply_identities_v1.db"), null)
-        try {
-            db.execSQL("DELETE FROM relation_facts")
-            db.execSQL("DELETE FROM relation_meta")
-        } finally { db.close() }
+        storage(context).facts.clearAll()
     }
 
     @Synchronized fun roles(context: Context): List<ReplyRole> = storage(context).roles.list()
@@ -64,8 +66,10 @@ object ReplyIdentityProvider {
             "relation_facts_get" -> {
                 val store = storage(context).facts
                 val meta = store.meta(key)
+                val all = extras?.getBoolean("all") == true
                 Bundle().apply {
-                    putStringArrayList("facts", ArrayList(store.list(key).map { it.encode().toString() }))
+                    putStringArrayList("facts", ArrayList((if (all) store.listAll(key) else store.list(key))
+                        .map { it.encode().toString() }))
                     putLong("last_at", meta.lastAt)
                     putLong("last_message_id", meta.lastMessageId)
                 }
@@ -77,11 +81,18 @@ object ReplyIdentityProvider {
                         (0 until array.length()).mapNotNull { array.optJSONObject(it)?.let(RelationFact::decode) }
                     }.orEmpty()
                 }
-                val merged = RelationFacts.merge(store.list(key), incoming, System.currentTimeMillis())
-                store.save(key, merged)
+                val merged = RelationFacts.merge(store.listAll(key), incoming, System.currentTimeMillis())
+                store.replace(key, merged)
                 store.saveMeta(key, RelationMeta(extras?.getLong("last_at", 0L) ?: 0L,
                     extras?.getLong("last_message_id", 0L) ?: 0L))
-                Bundle().apply { putStringArrayList("facts", ArrayList(merged.map { it.encode().toString() })) }
+                // 只记条数，日志可导出，不记内容。
+                dev.jev.wechatmood.core.MoodLog.i("RELATION_FACT_MERGE incoming=${incoming.size} " +
+                    "open=${merged.count { it.isOpen }} timed=${merged.count { it.isTimed && it.occurredAt > 0 }} " +
+                    "superseded=${merged.count { it.status == RelationFact.STATUS_SUPERSEDED }}")
+                // 只把有效条目回给聊天进程：已作废的约定不该再进提示词。
+                Bundle().apply {
+                    putStringArrayList("facts", ArrayList(merged.filter { it.isOpen }.map { it.encode().toString() }))
+                }
             }
             "relation_facts_clear" -> {
                 storage(context).facts.clear(key)

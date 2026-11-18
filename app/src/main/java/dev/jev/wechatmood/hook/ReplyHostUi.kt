@@ -528,21 +528,28 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
                 try {
                     val live = runCatching { MessageSniffer.replyContext(requireBottom = false) }.getOrNull()
                         ?: return@launch
-                    val extracted = withContext(Dispatchers.IO) { FactExtractor().extract(settings, live.messages) }
+                    // 页面上往往只有十几条，抽不出稳定事实；优先用本机历史补足，读不到再退回页面消息。
+                    val history = runCatching { ReplyDatabaseHistory.load(live, FactExtractor.MAX_MESSAGES) }.getOrNull()
+                    val messages = history?.messages?.takeIf { it.isNotEmpty() } ?: live.messages
+                    MoodLog.i("RELATION_FACT_INPUT page=${live.messages.size} used=${messages.size}")
+                    val extracted = withContext(Dispatchers.IO) { FactExtractor().extract(settings, messages) }
                     if (extracted.isEmpty()) {
-                        if (!auto) state.text = "这次没有提取到新的事实"
+                        if (!auto && ownsDrawer()) state.text = "这次没有提取到新的事实"
                         return@launch
                     }
                     val saved = withContext(Dispatchers.IO) {
                         RelationFactBridge.save(activity, key, extracted, System.currentTimeMillis(),
-                            live.messages.lastOrNull()?.id ?: 0)
+                            messages.lastOrNull()?.id ?: 0)
                     }
-                    facts = saved
-                    if (!auto) state.text = "关系档案已更新：${saved.size} 条"
+                    if (ownsDrawer()) {
+                        facts = saved
+                        if (!auto) state.text = "关系档案已更新：${saved.size} 条"
+                    }
+                    MoodLog.i("RELATION_FACT_SAVED count=${saved.size}")
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
                     MoodLog.w("RELATION_FACTS_FAILED " + e.javaClass.simpleName)
-                    if (!auto) state.text = "关系档案更新失败：" + (e.message ?: "请重试")
+                    if (!auto && ownsDrawer()) state.text = "关系档案更新失败：" + (e.message ?: "请重试")
                 }
             }
         }
@@ -1035,13 +1042,18 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
         if (autoTopics) generate("", true)
         // 开关打开时按条件静默整理一次：距上次超过 3 天，或这段时间新增了 30 条以上消息。
         val factsKey = owner.key
-        if (RelationFactBridge.enabled(activity) && factsKey != null) {
+        val factsEnabled = RelationFactBridge.enabled(activity)
+        // 这里以前什么都不记，出问题时只能看到「档案没更新」。两个前置条件都写进日志。
+        MoodLog.i("RELATION_FACT_AUTO enabled=$factsEnabled key=${factsKey != null}")
+        if (factsEnabled && factsKey != null) {
             scope.launch {
                 val meta = withContext(Dispatchers.IO) { RelationFactBridge.meta(activity, factsKey) }
                 val gap = System.currentTimeMillis() - meta.lastAt
-                if (gap < 24 * 3600_000L) return@launch
                 val fresh = live.messages.count { it.id > meta.lastMessageId }
-                if (gap > 3 * 24 * 3600_000L || fresh >= 30) refreshFacts(true)
+                // 之前先判「不到 24 小时就返回」，导致新增几十条也永远不抽；两个条件应当并列。
+                val due = gap > 3 * 24 * 3600_000L || fresh >= 30
+                MoodLog.i("RELATION_FACT_AUTO meta_last=${meta.lastAt} gap_hours=${gap / 3600_000L} fresh=$fresh due=$due")
+                if (due) refreshFacts(true)
             }
         }
         fitWindow()

@@ -12,13 +12,15 @@ import org.json.JSONObject
 object RelationFactBridge {
     fun enabled(context: Context): Boolean = runCatching {
         SettingsTransport.call(context, "relation_facts_enabled", null, null)?.getBoolean("enabled") == true
-    }.getOrDefault(false)
+    }.onFailure { MoodLog.w("RELATION_FACT_BRIDGE_FAIL enabled ${it.javaClass.simpleName}: ${it.message}") }
+        .getOrDefault(false)
 
     fun load(context: Context, key: ReplyContactKey): List<RelationFact> = runCatching {
         val bundle = SettingsTransport.call(context, "relation_facts_get", key.value,
             Bundle().apply { generation()?.let { putString(SettingsProvider.KEY_GENERATION, it) } }) ?: return emptyList()
         decode(bundle.getStringArrayList("facts").orEmpty())
-    }.getOrDefault(emptyList())
+    }.onFailure { MoodLog.w("RELATION_FACT_BRIDGE_FAIL load ${it.javaClass.simpleName}: ${it.message}") }
+        .getOrDefault(emptyList())
 
     fun meta(context: Context, key: ReplyContactKey): RelationMeta = runCatching {
         val bundle = SettingsTransport.call(context, "relation_facts_get", key.value,

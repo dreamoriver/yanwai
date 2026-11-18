@@ -23,7 +23,8 @@ data class ReplyContext(val talker: String, val messages: List<ReplyMessage>, va
     val source: ReplyContextSource = ReplyContextSource.LOADED_PAGE, val historyFailure: String? = null,
     val requestedMessages: Int = MAX_MESSAGES, val historyAnchor: ReplyHistoryAnchor? = null,
     val background: ContactBackground = ContactBackground(), val focusMessageId: Long = 0,
-    val targetMedia: String? = null, val targetImageDataUri: String? = null) {
+    val targetMedia: String? = null, val targetImageDataUri: String? = null, val focusText: String? = null,
+    val facts: List<RelationFact> = emptyList()) {
     val fingerprint: String get() {
         val text = messages.joinToString("\u0000") { "${it.id}:${it.speaker.length}:${it.speaker}:${it.time}:${it.text.length}:${it.text}:${it.voice?.key.orEmpty()}:${it.voiceState}" }
         return MessageDigest.getInstance("SHA-256").digest("$talker:$latestLoadedId:${background.revision}:$text".toByteArray())

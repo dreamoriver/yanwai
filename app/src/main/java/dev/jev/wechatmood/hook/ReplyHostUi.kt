@@ -54,6 +54,8 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
     /** 长按图片/表情时记住目标消息与已取的图，重新读取历史后也要留住。 */
     private var targetFocusId: Long = 0
     private var targetImage: String? = null
+    /** 从「＋」面板进来、没有长按目标：目标跟随对方最后一条消息，重新读取时要重算。 */
+    private var autoTarget = false
     /** 当前会话的关系档案，生成回复时随上下文一起给模型。 */
     private var facts: List<RelationFact> = emptyList()
     private var draftTargetMedia: String? = null
@@ -108,6 +110,7 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
     fun open(focusMessageId: Long? = null, imageDataUri: String? = null, autoTopics: Boolean = false): Boolean {
         targetFocusId = focusMessageId ?: 0
         targetImage = imageDataUri
+        autoTarget = focusMessageId == null
         val selectedTalker = talker ?: return false
         if (MessageSniffer.currentReplyTalker() != selectedTalker) return false
         if (dialog?.isShowing == true || openingJob?.isActive == true) return true
@@ -187,10 +190,11 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
         if (captured.talker != selectedTalker) return false
         val initialEditor = editor()
         if (remembered == null && initialEditor == null) { toast("请先切换到文字输入"); return true }
-        val focusId = remembered?.focusMessageId ?: focusMessageId
+        // 默认目标模式不沿用上次面板里的 focus：那可能是几小时前的一条，重新打开应该看最新一条。
+        val focusId = if (autoTarget) targetFocusId else remembered?.focusMessageId ?: focusMessageId
         /** 「这一轮在回哪条」：有目标就写时间和摘要，没有就说自由发挥。 */
         fun replyTargetText(ctx: ReplyContext): String {
-            val id = ctx.focusMessageId.takeIf { it > 0 } ?: targetFocusId
+            val id = (if (autoTarget) 0L else ctx.focusMessageId).takeIf { it > 0 } ?: targetFocusId
             val target = ctx.messages.firstOrNull { it.id == id }
                 ?: ctx.messages.lastOrNull { it.speaker != "我" && it.text.isNotBlank() }
             if (target == null) return "自由发挥：按最近对话接一句"
@@ -863,9 +867,19 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
             failed = false
             state.text = ""; state.setTextColor(theme.muted)
             renderParts(); controls(false)
-            val loaded = runCatching { MessageSniffer.replyContext(requireBottom = false, focusId = targetFocusId) }.getOrElse {
+            // 默认目标模式下不能拿打开面板时记住的 targetFocusId 去读：新消息进来后它会一直指向旧的那条，
+            // 重新读取也就永远显示同一条。这里重新按「对方最后一条」算一次目标。
+            val loaded = runCatching {
+                MessageSniffer.replyContext(requireBottom = false, focusId = if (autoTarget) 0 else targetFocusId)
+            }.getOrElse {
                 reference.fail(ticket); state.text = it.message ?: "读取聊天失败，请重试"; controls(false); return
-            }.let { ctx -> targetImage?.let { if (ctx.targetImageDataUri == null) ctx.copy(targetImageDataUri = it) else ctx } ?: ctx }
+            }.let { ctx ->
+                if (autoTarget) ctx.messages.lastOrNull { it.speaker != "我" && it.id > 0 }?.let { target ->
+                    targetFocusId = target.id
+                    MoodLog.i("REPLY_AUTO_TARGET refresh ready=${target.id > 0} placeholder=${target.placeholder}")
+                }
+                targetImage?.let { if (ctx.targetImageDataUri == null) ctx.copy(targetImageDataUri = it) else ctx } ?: ctx
+            }
             if (loaded.talker != selectedTalker) { reference.cancel(); window.dismiss(); return }
             historyJob = scope.launch {
                 try {
@@ -899,6 +913,7 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
                     }
                     if (!reference.complete(ticket, current.copy(facts = facts), MessageSniffer.currentReplyTalker())) return@launch
                     snapshot = current
+                    targetLine.text = replyTargetText(current)
                     state.text = when {
                         current.messages.any { it.voiceState == VoiceState.FAILED } ->
                             "${current.messages.count { it.voiceState == VoiceState.FAILED }} 条语音未能转写，将明确标注缺失；可在条数菜单中重试。"

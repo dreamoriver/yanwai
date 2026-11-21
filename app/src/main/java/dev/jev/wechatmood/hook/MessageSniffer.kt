@@ -331,7 +331,7 @@ object MessageSniffer {
         val adapter: Any
         val read: (Int) -> MessageMetadata?
         val count: Int
-        val scrollingView: View
+        var scrollingView: View? = null
         if (list != null) {
             adapter = list.adapter
             count = list.count
@@ -347,12 +347,22 @@ object MessageSniffer {
             count = counter.invoke(adapter) as Int
             val getItem = adapter.javaClass.getMethod("getItem", Int::class.javaPrimitiveType)
             read = { index -> MessageMetadata.read(runCatching { getItem.invoke(adapter, index) }.getOrNull()) }
-            val row = rows.firstOrNull { it.second.adapter?.get() === adapter }?.first ?: error("聊天已变化")
-            scrollingView = generateSequence(row.parent as? View) { it.parent as? View }.firstOrNull { view ->
-                generateSequence(view.javaClass as Class<*>) { it.superclass }.any { it.name.endsWith(".RecyclerView") }
-            } ?: error("未识别聊天滚动区域")
+            // 从「＋」面板进来时，之前绑定过的消息 View 可能已经被回收（parent 断开、isAttachedToWindow=false），
+            // 不能拿它去找滚动区域；优先用还挂在窗口里的那一行。类名也不要求正好以 .RecyclerView 结尾，
+            // 微信的聊天列表是自定义子类。
+            val candidates = rows.filter { it.second.adapter?.get() === adapter }.map { it.first }
+            scrollingView = candidates.asSequence().filter { it.isAttachedToWindow }.mapNotNull { row ->
+                generateSequence(row.parent as? View) { it.parent as? View }.firstOrNull { view ->
+                    generateSequence(view.javaClass as Class<*>) { it.superclass }.any { it.name.contains("RecyclerView") }
+                }
+            }.firstOrNull()
         }
-        if (requireBottom && scrollingView.canScrollVertically(1)) error("请先回到聊天底部，再生成这次的回复")
+        // 只有要求「先回到聊天底部」时才必须拿到滚动区域；打开面板读取历史不需要它，
+        // 面板盖住列表时找不到也不该让整个读取失败。
+        if (requireBottom) {
+            val scrolling = scrollingView ?: error("未识别聊天滚动区域")
+            if (scrolling.canScrollVertically(1)) error("请先回到聊天底部，再生成这次的回复")
+        }
         val messages = mutableListOf<MessageMetadata>()
         var textCount = 0
         for (index in (count - 1) downTo (count - 400).coerceAtLeast(0)) {

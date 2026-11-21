@@ -402,7 +402,8 @@ object ReplyDatabaseHistory {
             result
         }
 
-    suspend fun load(loaded: ReplyContext, limit: Int = ReplyContext.MAX_MESSAGES): ReplyContext = withContext(Dispatchers.IO) {
+    suspend fun load(loaded: ReplyContext, limit: Int = ReplyContext.MAX_MESSAGES,
+        accountScope: String? = null): ReplyContext = withContext(Dispatchers.IO) {
         require(limit in 1..ReplyContext.MAX_MESSAGES)
         val startedAt = android.os.SystemClock.elapsedRealtime()
         val active = coroutineContext
@@ -424,6 +425,38 @@ object ReplyDatabaseHistory {
             MoodLog.i("REPLY_HISTORY_RESULT requested=$limit handles=${databases.size} source=${it.source} " +
                 "count=${it.messages.size} trimmed=${it.trimmed} took=${android.os.SystemClock.elapsedRealtime() - startedAt}ms " +
                 "quoted=${it.messages.count { message -> message.text.startsWith("【引用") }}")
+        }.let { read ->
+            // 昵称解析只认当前账号的库：displayNames 在 accountScope 为空时会拒绝所有 handle，
+            // 表现就是日志里 dbs=0、群消息全是裸 wxid。调用方没给账号时用页面锚点自己核一次。
+            // 私聊不需要改名，别为它白查一遍库。
+            val group = read.talker.endsWith("@chatroom")
+            val scope = accountScope?.takeIf { it.matches(Regex("[0-9a-f]{64}")) }
+                ?: if (group) replyAccount(read) else null
+            val named = nameGroupSpeakers(read, scope)
+            // 真正被换掉名字的条数：替换前 speaker 必须还是 senderId，不能拿「本来就有名字」的页面消息充数。
+            val renamed = named.messages.zip(read.messages).count { (after, before) -> after.speaker != before.speaker }
+            MoodLog.i("REPLY_NAMES_RESULT requested=$limit count=${named.messages.size} " +
+                "renamed=$renamed account=${scope != null}")
+            named
         }
+    }
+
+    /**
+     * 历史里的群消息只有 wxid，页面上却是昵称。同一段上下文两种称呼会让模型分不清谁是谁，
+     * 所以在返回前用群成员资料换一次名字；查不到就保持原样，不编造称呼。
+     */
+    private suspend fun nameGroupSpeakers(context: ReplyContext, accountScope: String?): ReplyContext {
+        if (!context.talker.endsWith("@chatroom")) return context
+        val unnamed = context.messages
+            .filter { it.senderId.isNotBlank() && it.speaker == it.senderId }
+            .map { it.senderId }.distinct()
+        if (unnamed.isEmpty()) return context
+        val names = runCatching { displayNames(unnamed, accountScope) }.getOrNull().orEmpty()
+        MoodLog.i("REPLY_GROUP_NAMES wanted=${unnamed.size} found=${names.size} account=${accountScope != null}")
+        if (names.isEmpty()) return context
+        return context.copy(messages = context.messages.map { message ->
+            val name = names[message.senderId]?.takeIf(String::isNotBlank)
+            if (name != null && message.speaker == message.senderId) message.copy(speaker = name) else message
+        })
     }
 }

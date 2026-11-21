@@ -98,14 +98,14 @@ internal class ForwardDigestUi(private val activity: Activity, private val messa
             }
             runCatching {
                 ReplyHttpClient().request(settings, ForwardDigestProtocol.payload(settings, message),
-                    ForwardDigestProtocol::parse) { partial ->
+                    ForwardDigestProtocol::parse, onPartial = { partial ->
                     if (partial.isNotBlank()) {
                         // 显示前再清洗一次：模型会把输入里的填充原样复述出来。
                         val clean = with(ForwardDigest) { partial.stripFiller() }
                         result = clean
                         text?.post { text?.text = clean }
                     }
-                }
+                })
             }.onSuccess { content ->
                 finish(content, copy)
             }.onFailure { error ->

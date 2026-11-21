@@ -87,6 +87,16 @@ object NativeVoiceBridge {
             ?: candidates.singleOrNull() ?: error("语音转写尚未连接当前聊天，请退出后重新进入")
     }
 
+    /**
+     * 只读：微信已经保存的转写文本，不触发原生转写、不播放音频、不写库。
+     * 准备回复上下文时先批量问一遍，命中的语音就不占那 3 条转写额度。
+     */
+    internal suspend fun existingText(source: VoiceSource): String? = withContext(Dispatchers.IO) {
+        val config = setup
+        val record = ReplyDatabaseHistory.voiceRecord(source, config?.contract?.messageClass) ?: return@withContext null
+        ReplyDatabaseHistory.voiceText(record)
+    }
+
     suspend fun transcribe(source: VoiceSource, allowed: () -> Boolean): String = lane.withLock {
         currentCoroutineContext().ensureActive()
         suspend fun checkChat() = withContext(Dispatchers.Main.immediate) {

@@ -20,9 +20,19 @@ class ReplyHttpClient(private val client: Call.Factory = HttpClients.shared.newB
         relationship: ReplyRelationship = ReplyRelationship.UNSPECIFIED, customRelationship: String = "",
         onPartial: ((String) -> Unit)? = null): ReplySuggestion {
         check(settings.isConfigured) { "请先在言外的「回复建议」中保存地址、API Key 和模型名" }
+        // 不逐条展示，就不要流式：少带一个 stream_options，也免得网关不支持时多一次重试。
         val payload = ReplyProtocol.payload(settings, context, draft, direction, knowledge, previous, focusMessageId,
-            relationship, customRelationship, stream = true)
-        return request(settings, payload, ReplyProtocol::parse, onPartial)
+            relationship, customRelationship, stream = false)
+        return request(settings, payload, ReplyProtocol::parse, null)
+    }
+
+    /** 一次小请求：图片 → 一句话描述。失败抛异常，由 ImageDigest 兜住。 */
+    suspend fun describeImage(settings: ReplySettings, dataUri: String): String {
+        check(settings.isConfigured) { "请先配置回复模型" }
+        // 不能用「去掉图片再试一次」：真的把图去掉，模型只会答「没有收到图片」，
+        // 那句话会被当成描述缓存下来。宁可失败，也不要假描述。
+        return request(settings, ReplyProtocol.digestPayload(settings, dataUri), ReplyProtocol::parseDigest,
+            imageFallback = false)
     }
 
     suspend fun findTopics(settings: ReplySettings, context: ReplyContext, draft: String, notes: String,
@@ -33,14 +43,14 @@ class ReplyHttpClient(private val client: Call.Factory = HttpClients.shared.newB
     }
 
     internal suspend fun <T> request(settings: ReplySettings, payload: JSONObject, parse: (String) -> T,
-        onPartial: ((String) -> Unit)? = null): T =
+        onPartial: ((String) -> Unit)? = null, imageFallback: Boolean = true): T =
         try {
             once(settings, payload, parse, onPartial)
         } catch (error: IllegalStateException) {
             // 输出被截断说明 max_tokens 不够，放宽上限重试一次，比让用户手动点重试好。
             if (error.message?.contains("截断") == true) {
                 once(settings, JSONObject(payload.toString()).put("max_tokens", 2400), parse, onPartial)
-            } else if (hasImage(payload)) {
+            } else if (imageFallback && hasImage(payload)) {
                 // 图片必须最先回退：若先去掉 response_format / stream_options，重试仍带着图片，
                 // 再失败就直接抛错，纯文本兜底永远走不到。
                 MoodLog.w("REPLY_FALLBACK_TEXT 模型不接受图片，已回退纯文本：${error.message?.take(60)}")
@@ -100,7 +110,10 @@ class ReplyHttpClient(private val client: Call.Factory = HttpClients.shared.newB
                                     401, 403 -> "API Key 或模型权限不可用，请检查模型配置"
                                     402 -> "模型账户额度不足"
                                     429 -> "请求过于频繁，请稍后重试"
-                                    400, 422 -> "上下文超出模型长度上限：把「参考最近」调小，或换上下文更大的模型"
+                                    400, 422 -> if (hasImage(payload))
+                                        "模型没有接受这次请求：可能是不支持图片，或上下文超出长度上限。先换支持图片的模型，或把「参考最近」调小"
+                                    else
+                                        "上下文超出模型长度上限：把「参考最近」调小，或换上下文更大的模型"
                                     404 -> "接口地址或模型名不对，请检查回复模型配置"
                                     in 300..399 -> "接口发生重定向，请填写最终地址"
                                     else -> "模型服务暂不可用（HTTP ${reply.code}）"

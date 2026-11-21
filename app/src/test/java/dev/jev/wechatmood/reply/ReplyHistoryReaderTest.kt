@@ -90,7 +90,10 @@ class ReplyHistoryReaderTest {
         val result = ReplyHistoryReader.read(ReplyContext.collect("friend", listOf(photo)), listOf(db), 30)
         assertEquals(1, calls)
         assertEquals(ReplyContextSource.LOADED_PAGE, result.source)
-        assertTrue(result.messages.isEmpty())
+        // 媒体占位留在页面上：内容没读到，但不能把「这里发过一张图」也一起丢掉。
+        assertEquals(1, result.messages.size)
+        assertTrue(result.messages.single().placeholder)
+        assertFalse(result.toString().contains("other-account-image"))
     }
 
     @Test fun smallActualHistoryIsNotPaddedOrClaimedAsFailure() {
@@ -139,7 +142,7 @@ class ReplyHistoryReaderTest {
             assertEquals(oddTalker, args.first())
             if (!sql.contains("msgId = ?")) {
                 queriedHistory = true
-                assertTrue(sql.contains("type IN (1, 34, 49, 822083633)"))
+                assertTrue(sql.contains("type IN (${ReplyHistoryReader.HISTORY_TYPES.joinToString(", ")})"))
                 assertTrue(sql.contains("LIMIT 101"))
                 assertTrue(sql.contains("ORDER BY msgId DESC"))
             }

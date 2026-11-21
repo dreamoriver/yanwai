@@ -21,13 +21,15 @@ object ReplyProtocol {
     fun payload(settings: ReplySettings, context: ReplyContext, draft: String, direction: String, knowledge: String,
         previous: String = "", focusMessageId: Long? = null,
         relationship: ReplyRelationship = ReplyRelationship.UNSPECIFIED, customRelationship: String = "",
-        stream: Boolean = false): JSONObject {
+        stream: Boolean = false, imageDigest: String? = null): JSONObject {
         val instructions = """
             ${ContactBackground.GUIDANCE}
             你是言外的聊天回复助手，回复逻辑来自狗头军师 goutoujunshi。
             结合当前整段对话，替“我”拟本轮可依次发送的自然短消息。恋爱、暧昧、伴侣沟通可以正常讨论。
-            reply_target 是用户长按的那一条，本轮只回应它；messages 里其它内容只是背景，不要回复它们，
-            也不要把被引用的旧消息当成要回应的对象。先理解双方关系、事实、当前话题与我的目标，
+            reply_target 是这一轮要回应的消息（用户长按的那条，或者默认的对方最后一句）；有它时本轮只回应它，
+            messages 里其它内容只是背景，不要回复它们，也不要把被引用的旧消息当成要回应的对象。
+            没有 reply_target 时说明没有指定对象：只按最近对话自然接一句，不要假装对方刚问了什么。
+            先理解双方关系、事实、当前话题与我的目标，
             再决定本轮一个主动作；贴合我最近消息的口吻、长度和称呼。
             不要求填写问卷，不强制建档或评分。不了解的背景保持未知；不要编造我的经历、承诺、安排或对方心理。
             草稿是我想表达的意思，direction 是我对回复的补充要求。重点消息只是关注点，不自动生成引用或忽略后续消息。
@@ -55,9 +57,17 @@ object ReplyProtocol {
         """.trimIndent()
         val evidence = evidence(context, draft, direction, previous, focusMessageId, relationship, customRelationship)
         // 目标是一张图片/表情时，告诉模型怎么用这张图，而不是当成普通文字。
+        // 有图和没图要分开说。取图失败时仍写「内容已附上」，模型会照着编图里的内容。
         val mediaHint = context.targetMedia?.let { media ->
-            "\n对方本轮发来一张${media}，内容已随消息附上；先判断这张${media}表达的情绪（玩笑、撒娇、阴阳、认真、安慰等），" +
-                "再按对应情绪取用上面的通用原则。不要复述识别过程，也不要提已附图、测试这类系统措辞。"
+            val name = if (media == "表情") "一个表情" else "一张${media}"
+            val seen = (imageDigest ?: context.targetImageDigest)?.takeIf { it.isNotBlank() }
+                ?.let { "；另外单独看图得到的一句描述是：$it" }.orEmpty()
+            if (context.targetImageDataUri != null)
+                "\n对方本轮发来${name}，内容已随消息附上${seen}；先判断它表达的情绪（玩笑、撒娇、阴阳、认真、安慰等），" +
+                    "再按对应情绪取用上面的通用原则。不要复述识别过程，也不要提已附图、测试这类系统措辞。"
+            else
+                "\n对方本轮发来${name}，但这次没取到内容，只能按上下文判断；不要编造${media}里是什么，" +
+                    "需要时可以顺着文字内容自然回应，或简短确认。"
         }.orEmpty()
         val image = context.targetImageDataUri
         val userMessage = if (image != null) JSONObject().put("role", "user").put("content", JSONArray()
@@ -91,7 +101,7 @@ object ReplyProtocol {
                 ?: context.messages.filter { it.speaker == "我" }.takeLast(6).map { it.text.take(60) }))
             .put("reply_target", if (context.targetMedia != null) JSONObject().put("id", context.focusMessageId)
                 .put("speaker", "对方").put("type", "media").put("media", context.targetMedia)
-                .put("note", "对方发来一张${context.targetMedia}")
+                .put("note", "对方发来" + if (context.targetMedia == "表情") "一个表情" else "一张${context.targetMedia}")
             else focusMessageId?.let { id -> context.messages.firstOrNull { it.id == id } }?.let { target ->
                 val obj = JSONObject().put("id", target.id).put("speaker", target.speaker).put("text", target.text)
                 // 长按的是合并转发：这段文本是本地摊平出来的，得明确告诉模型回的是什么。
@@ -99,6 +109,11 @@ object ReplyProtocol {
                     obj.put("type", "forward").put("note", "对方发来一段聊天记录，本轮要接住这段记录里的内容与情绪")
                 }
                 obj
+            } ?: context.focusText?.takeIf { it.isNotBlank() }?.let { text ->
+                // 长按的消息落在参考范围之外时 messages 里找不到它；没有这条兜底，
+                // reply_target 会变成 null，模型就只能回别的消息。
+                JSONObject().put("type", "text").put("speaker", "对方").put("text", text.take(400))
+                    .put("note", "这条消息不在本次参考范围内，但用户明确要求回应它")
             } ?: JSONObject.NULL)
             .put("omitted_media", context.omittedMedia).put("context_trimmed", context.trimmed)
             .put("context_source", context.source.name).put("page_only", context.source == ReplyContextSource.LOADED_PAGE)
@@ -134,6 +149,45 @@ object ReplyProtocol {
         val raw = message.getString("content").trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
         val json = raw.substring(raw.indexOf('{').takeIf { it >= 0 } ?: 0).trim()
         return JSONObject(json)
+    }
+
+    /** 单独一次调用：让视觉模型用一句话说清这张图，供长按回复时复用。 */
+    fun digestPayload(settings: ReplySettings, imageDataUri: String): JSONObject {
+        val instructions = "你在帮用户理解聊天里对方发来的一张图片。用一句不超过 40 字的中文，" +
+            "说清这张图里能确定看到的内容（人物动作、物品、场景、截图里的关键文字）。" +
+            "看不清或拿不准就不要猜。只输出这一句描述，不要解释。"
+        val content = JSONArray()
+            .put(JSONObject().put("type", "text").put("text", "聊天里对方发来了这张图片，请用一句话描述它。"))
+            .put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", imageDataUri)))
+        // 参数与正式生成保持一致：有些服务对很短的 max_tokens 或低温参数会直接拒绝，
+        // 表现为「模型不接受图片」，让人误以为它不支持视觉。
+        // 带推理的模型会先消耗一段思考 token，正文才出现；预算太小会直接截成空响应。
+        return JSONObject().put("model", settings.model).put("stream", false).put("max_tokens", 1500)
+            .put("temperature", 0.9)
+            .put("messages", JSONArray()
+                .put(JSONObject().put("role", "system").put("content", instructions))
+                .put(JSONObject().put("role", "user").put("content", content)))
+    }
+
+    /**
+     * 描述请求不走 JSON 输出：只取一段正文，清洗后当一句话用。
+     * 兼容推理模型：content 为空时读 reasoning_content / reasoning，取最后一行。
+     */
+    internal fun parseDigest(body: String): String {
+        val root = JSONObject(body)
+        check(!root.has("error")) { "图片描述请求被拒绝" }
+        val choice = root.getJSONArray("choices").getJSONObject(0)
+        val message = choice.getJSONObject("message")
+        fun lastLine(value: String) = value.trim().lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
+        val candidates = listOf(
+            message.optString("content"),
+            lastLine(message.optString("reasoning_content")),
+            lastLine(message.optString("reasoning")),
+            choice.optString("text"))
+        val picked = candidates.mapNotNull { ImageDigest.normalize(it)?.takeIf(ImageDigest::usable) }.firstOrNull()
+        // 失败时把 finish_reason 和正文长度带出去，日志里就能分清是截断、空响应还是被拒。
+        return picked ?: error("没有取到图片描述（finish=${choice.optString("finish_reason")} " +
+            "content=${message.optString("content").length} reasoning=${message.optString("reasoning_content").length}）")
     }
 
     fun parse(body: String): ReplySuggestion = try {

@@ -27,11 +27,15 @@ class ReplyCoreTest {
             MessageMetadata(1, 0, "别的聊天", "b", 3, 3000),
             MessageMetadata(3, 0, "图片地址", "a", 4, 4000))
         val context = ReplyContext.collect("a", records)
-        assertEquals(2, context.messages.size)
+        // 图片以占位进上下文：正文只有两条文字，但时间线上保留「这里发过一张图」。
+        assertEquals(3, context.messages.size)
         assertEquals("我", context.messages.first().speaker)
-        assertEquals(2000L, context.messages.last().time)
-        assertEquals(1500, context.messages.last().text.length)
-        assertEquals(1, context.omittedMedia)
+        assertEquals(2000L, context.messages[1].time)
+        assertEquals(1500, context.messages[1].text.length)
+        assertEquals("【图片】", context.messages.last().text)
+        assertTrue(context.messages.last().placeholder)
+        assertEquals(0, context.omittedMedia)
+        assertFalse(context.messages.toString().contains("图片地址"))
     }
 
     @Test fun `context retains latest hundred and group sender with bounded total length`() {
@@ -67,7 +71,8 @@ class ReplyCoreTest {
         val context = ReplyContext.collect("a", listOf(MessageMetadata(1, 0, "看这个", "a", 1),
             MessageMetadata(3, 0, "private-media-path", "a", 2)))
         assertEquals(2L, context.latestLoadedId)
-        assertEquals(1, context.messages.size)
+        assertEquals(2, context.messages.size)
+        assertEquals("【图片】", context.messages.last().text)
         assertFalse(context.messages.toString().contains("private-media-path"))
     }
 }

@@ -36,11 +36,7 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val session = ReplySession()
     private val history = ReplyHistory.process
-    /** 横条上的按钮交给宿主面板：分析开关和档案、待办都在同一个入口里。 */
-    private fun open(): Boolean {
-        openPanel()
-        return true
-    }
+    // 横条只留「附加」一个入口：分析开关、统计、档案、待办都在同一个面板里。
     private val plusEntry = ReplyPlusRow(activity, createAnalysisControl) { open() }
     private var job: Job? = null
     private var historyJob: Job? = null
@@ -51,6 +47,8 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
     private var talker: String? = null
     private var dialog: Dialog? = null
     private var snapshot: ReplyContext? = null
+    /** 依据弹窗改为异步读缓存后再显示，同一个面板只留一个。 */
+    private var evidenceDialog: AlertDialog? = null
     private var newMessageNotice: TextView? = null
     private var invalidateRequest: (() -> Unit)? = null
     /** 长按图片/表情时记住目标消息与已取的图，重新读取历史后也要留住。 */
@@ -118,6 +116,15 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
         val live = runCatching { MessageSniffer.replyContext(requireBottom = false, focusId = targetFocusId) }.getOrElse {
             toast(it.message ?: "读取聊天失败"); return true
         }
+        // 从附加面板进来没有长按目标：默认回对方最后一条消息。
+        // 以前要求「正文非空」，会把最后一条是图片/语音时跳过它，转而去回更早那句；
+        // 现在按消息取，占位由 replyTargetText 说明类型。
+        if (focusMessageId == null) {
+            live.messages.lastOrNull { it.speaker != "我" && it.id > 0 }?.let { target ->
+                targetFocusId = target.id
+                MoodLog.i("REPLY_AUTO_TARGET ready=${target.id > 0} placeholder=${target.placeholder}")
+            }
+        }
         if (live.talker != selectedTalker) return false
         openingJob = scope.launch {
             try {
@@ -181,6 +188,43 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
         val initialEditor = editor()
         if (remembered == null && initialEditor == null) { toast("请先切换到文字输入"); return true }
         val focusId = remembered?.focusMessageId ?: focusMessageId
+        /** 「这一轮在回哪条」：有目标就写时间和摘要，没有就说自由发挥。 */
+        fun replyTargetText(ctx: ReplyContext): String {
+            val id = ctx.focusMessageId.takeIf { it > 0 } ?: targetFocusId
+            val target = ctx.messages.firstOrNull { it.id == id }
+                ?: ctx.messages.lastOrNull { it.speaker != "我" && it.text.isNotBlank() }
+            if (target == null) return "自由发挥：按最近对话接一句"
+            val clock = if (target.time > 0) java.text.SimpleDateFormat("HH:mm", java.util.Locale.CHINA)
+                .format(java.util.Date(target.time)) else ""
+            // 图片、表情的正文只是占位：直接显示「【图片】」看不出在回什么。
+            // 有缓存描述就写描述，没有就说明生成时会先看图。
+            // 本轮刚生成的描述在 ctx 里；重开面板时 ctx 没有，去缓存里找同一张图的描述。
+            val digest = ctx.targetImageDigest?.takeIf { it.isNotBlank() && ctx.focusMessageId == target.id }
+                ?: if (target.placeholder) ImageDigest.cached(activity, ctx.talker, target.id) else null
+            val text = when {
+                target.placeholder -> when {
+                    digest != null -> "「${digest.take(30)}」"
+                    target.text.contains("表情") -> "一个表情（生成时会先看它）"
+                    target.text.contains("图片") -> "一张图片（生成时会先看它）"
+                    else -> target.text.trim('【', '】')
+                }
+                // 语音：转写过就显示内容，跳过和失败要分开说，别让用户以为没语音。
+                target.voice != null -> when (target.voiceState) {
+                    VoiceState.READY -> target.text.take(30)
+                    VoiceState.SKIPPED -> "一条语音（本轮未转写）"
+                    VoiceState.FAILED -> "一条语音（未能转写）"
+                    else -> "一条语音"
+                }
+                // 合并转发：正文是摊平的长文本，这里只说清「回的是哪段记录」。
+                target.text.startsWith("【合并转发") -> {
+                    val title = Regex("【合并转发：([^】]*)】").find(target.text)?.groupValues?.get(1).orEmpty()
+                    if (title.isBlank()) "一段聊天记录" else "一段聊天记录：${title.take(20)}"
+                }
+                else -> target.text.replace("\n", " ").take(30)
+            }
+            return if (target.speaker == "我") "接着我${if (clock.isBlank()) "" else " $clock"}的话：$text"
+            else "回复${if (clock.isBlank()) "" else " $clock"}：$text"
+        }
         snapshot = reference.context
         initialEditor?.let { (activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
             ?.hideSoftInputFromWindow(it.windowToken, 0) }
@@ -333,6 +377,13 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
         draftPanel.addView(draftUse, LinearLayout.LayoutParams(-2, dp(44)).apply { topMargin = dp(10) })
         results.addView(draftPanel)
         val checkDraft = action("检查输入框这句") { checkDraftAction?.invoke() }.apply { visibility = View.GONE }
+        // 把「这一轮在回哪条」摆在按钮上方：没有长按的时候，用户也能看出默认目标是什么。
+        val targetLine = theme.label(replyTargetText(captured), 12f, theme.muted).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(0, dp(2), 0, dp(2))
+        }
+        results.addView(targetLine, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) })
         val generateButton = action("生成回复", primary = true)
         val topicButton = action("找找话题")
         val shorter = action("更简短", quiet = true)
@@ -819,12 +870,20 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
             historyJob = scope.launch {
                 try {
                     if (!verifyAccount()) { window.dismiss(); return@launch }
-                    val pending = ReplyDatabaseHistory.load(loaded, limit)
-                    val voiceCount = pending.messages.count { it.voice != null }
+                    // 面板打开时的取图移到后台：主线程只碰 View 拿 bitmap，压缩和编码在 IO。
+                    val withImage = if (loaded.targetImageDataUri != null || loaded.targetMedia == null || loaded.focusMessageId <= 0) loaded
+                        else runCatching { MessageSniffer.captureMediaImage(loaded.focusMessageId) }.getOrNull()
+                            ?.let { loaded.copy(targetImageDataUri = it) } ?: loaded
+                    val pending = ReplyDatabaseHistory.load(withImage, limit, owner.account)
+                    // 分母只用真正要调原生转写的条数：已有微信转写的不占额度，超过上限的也不转。
+                    var voiceCount = 0
                     var voiceIndex = 0
-                    val current = VoicePreparation.reply(pending) { source ->
+                    val current = VoicePreparation.reply(pending,
+                        existing = { source -> NativeVoiceBridge.existingText(source) },
+                        onPlan = { voiceCount = it }) { source ->
                         ensureActive()
-                        state.text = "正在转写语音 ${++voiceIndex}/$voiceCount…"
+                        state.text = if (voiceCount > 0) "正在转写语音 ${++voiceIndex}/$voiceCount…"
+                            else "正在转写语音…"
                         NativeVoiceBridge.transcribe(source) {
                             ownsDrawer() && ModulePrefs.canGenerateReply && reference.isCurrent(ticket)
                         }
@@ -832,7 +891,8 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
                     ensureActive()
                     if (!ownsDrawer() || !ModulePrefs.canGenerateReply) return@launch
                     if (!verifyAccount()) { window.dismiss(); return@launch }
-                    if (current.messages.isEmpty() || current.messages.all { it.voiceState == VoiceState.FAILED }) {
+                    if (current.messages.isEmpty() ||
+                        current.messages.all { it.voiceState == VoiceState.FAILED || it.voiceState == VoiceState.SKIPPED }) {
                         reference.fail(ticket)
                         state.text = "尚无可用正文，语音可能未能转写，请在条数菜单中重试"
                         return@launch
@@ -842,6 +902,10 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
                     state.text = when {
                         current.messages.any { it.voiceState == VoiceState.FAILED } ->
                             "${current.messages.count { it.voiceState == VoiceState.FAILED }} 条语音未能转写，将明确标注缺失；可在条数菜单中重试。"
+                        current.messages.any { it.voiceState == VoiceState.SKIPPED } ->
+                            "${current.messages.count { it.voiceState == VoiceState.SKIPPED }} 条语音本轮未转写（已到上限），切到更大条数可再读一次。"
+                        current.targetMedia != null && current.targetImageDataUri == null ->
+                            "对方这条${current.targetMedia}没有取到内容，回复会只按上下文判断。"
                         current.historyFailure != null -> "仅读取到页面 ${current.messages.size} 条。历史暂不可用，可切换条数重试。"
                         current.messages.size < limit -> "本次读取到 ${current.messages.size} 条消息（含语音转写），将按实际内容回复。"
                         else -> ""
@@ -934,6 +998,7 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
                     focusMessageId = if (ctx.focusMessageId > 0) ctx.focusMessageId else targetFocusId,
                     targetImageDataUri = ctx.targetImageDataUri ?: targetImage)
             } ?: run { prepareHistory(composition.historyLimit); return }
+            targetLine.text = replyTargetText(current)
             val latest = MessageSniffer.replyBoundary()
             if (latest != null && latest != current.latestLoadedId && current.messages.none { it.id == latest }) {
                 prepareHistory(composition.historyLimit); toast("聊天有更新，读取完成后再点生成"); return
@@ -968,6 +1033,16 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
             job = scope.launch {
                 try {
                     if (!verifyAccount()) { window.dismiss(); return@launch }
+                    // 长按图片时先让视觉模型看一句描述（同图只调用一次），
+                    // 拿到就随提示词带上；失败不影响生成，退回「没取到内容」的措辞。
+                    val digested = if (current.targetImageDataUri == null || current.targetImageDigest != null) current
+                    else {
+                        state.text = "正在看这张${current.targetMedia ?: "图片"}…"
+                        state.setTextColor(theme.muted)
+                        ImageDigest.describe(activity, config, current.talker, current.focusMessageId,
+                            current.targetImageDataUri!!)
+                            ?.let { current.copy(targetImageDigest = it) } ?: current
+                    }
                     val knowledge = withContext(Dispatchers.IO) {
                         ReplyKnowledge.loadFor(activity, relationship,
                             current.messages.joinToString("\n") { it.text } + "\n" + baselineDraft + "\n" + notes)
@@ -982,8 +1057,10 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
                     val client = ReplyHttpClient()
                     val topics = if (findTopics) client.findTopics(config, current, baselineDraft, notes, knowledge, relationship,
                         requireNotNull(time), previousTopics, customRelationship) else null
-                    // 流式：第一条候选写完整就先显示在状态栏，不必等 3–5 条全部生成。
-                    val suggestion = if (findTopics) null else client.generate(config, current, baselineDraft, direction,
+                    // 一次性返回：用户不需要逐条蹦出的过程，关掉流式以后也少一次参数兼容重试。
+                    state.text = if (findTopics) "正在找话题…" else "正在生成回复…"
+                    state.setTextColor(theme.muted)
+                    val suggestion = if (findTopics) null else client.generate(config, digested, baselineDraft, direction,
                         knowledge, previous, focusId, relationship, customRelationship)
                     val activeConfig = ModulePrefs.replySettings()
                     if (!session.accepts(ticket, MessageSniffer.currentReplyTalker()) || !ownsDrawer() || !ModulePrefs.canGenerateReply) return@launch
@@ -1048,10 +1125,16 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
             scope.launch {
                 val meta = withContext(Dispatchers.IO) { RelationFactBridge.meta(activity, factsKey) }
                 val gap = System.currentTimeMillis() - meta.lastAt
-                val fresh = live.messages.count { it.id > meta.lastMessageId }
+                // 页面只加载十几条，拿它数增量永远到不了 30 条；与进聊天那处统一，按库里的真实新增算。
+                val window = withContext(Dispatchers.IO) {
+                    runCatching { ReplyDatabaseHistory.load(live, ReplyContext.MAX_MESSAGES) }
+                        .getOrNull()?.messages
+                }.orEmpty()
+                val fresh = window.count { it.id > meta.lastMessageId }
                 // 之前先判「不到 24 小时就返回」，导致新增几十条也永远不抽；两个条件应当并列。
                 val due = gap > 3 * 24 * 3600_000L || fresh >= 30
-                MoodLog.i("RELATION_FACT_AUTO meta_last=${meta.lastAt} gap_hours=${gap / 3600_000L} fresh=$fresh due=$due")
+                MoodLog.i("RELATION_FACT_AUTO meta_last=${meta.lastAt} gap_hours=${gap / 3600_000L} " +
+                    "fresh=$fresh window=${window.size} due=$due")
                 if (due) refreshFacts(true)
             }
         }
@@ -1072,15 +1155,45 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
         fun time(value: Long) = if (value <= 0) "时间未知" else java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA).format(java.util.Date(value))
         val voices = context.messages.count { it.voiceState == VoiceState.READY }
         val missing = context.messages.count { it.voiceState == VoiceState.FAILED }
-        return "${time(first)} — ${time(last)} · 含 $voices 条语音转写${if (missing > 0) " · $missing 条转写失败" else ""}${if (context.trimmed) " · 已截取" else ""}" +
+        val skipped = context.messages.count { it.voiceState == VoiceState.SKIPPED }
+        return "${time(first)} — ${time(last)} · 含 $voices 条语音转写${if (missing > 0) " · $missing 条转写失败" else ""}" +
+            (if (skipped > 0) " · $skipped 条未转写" else "") + "${if (context.trimmed) " · 已截取" else ""}" +
             (context.historyFailure?.let { "\n$it" } ?: "")
     }
     private fun showEvidence(context: ReplyContext) {
-        val source = if (context.source == ReplyContextSource.LOCAL_HISTORY) "本机聊天历史 · 选择最近 ${context.requestedMessages} 条，实际 ${context.messages.size} 条文字或语音"
+        val source = if (context.source == ReplyContextSource.LOCAL_HISTORY) "本机聊天历史 · 选择最近 ${context.requestedMessages} 条，实际 ${context.messages.size} 条"
             else "仅页面已加载片段 · 跳过 ${context.omittedMedia} 条其他媒体"
-        val info = "$source\n${contextSummary(context)}\n\n" +
-            context.messages.joinToString("\n\n") { "${it.speaker} · ${ReplyProtocol.formatTime(it.time)}${if (it.voice != null) " · 语音转写" else ""}\n${it.text}" }
-        AlertDialog.Builder(activity).setTitle("本次参考的聊天").setMessage(info).setPositiveButton("关闭", null).show()
+        val header = "$source\n${contextSummary(context)}\n\n"
+        // 图片和表情的描述缓存在 SharedPreferences 里，读盘放后台，别卡住聊天页。
+        scope.launch {
+            val body = withContext(Dispatchers.IO) {
+                context.messages.joinToString("\n\n") { message ->
+                    "${message.speaker} · ${ReplyProtocol.formatTime(message.time)}" +
+                        "${if (message.voice != null) " · 语音转写" else ""}\n${evidenceText(context, message)}"
+                }
+            }
+            // 读缓存期间抽屉已关或换了页面就不再弹，避免旧聊天的依据挡住当前聊天。
+            if (activity.isFinishing || activity.isDestroyed || dialog?.isShowing != true) return@launch
+            evidenceDialog?.dismiss()
+            val shown = AlertDialog.Builder(activity).setTitle("本次参考的聊天").setMessage(header + body)
+                .setPositiveButton("关闭", null).create()
+            evidenceDialog = shown
+            shown.setOnDismissListener { if (evidenceDialog === shown) evidenceDialog = null }
+            shown.show()
+        }
+    }
+
+    /**
+     * 依据弹窗里的正文：图片、表情这类占位不能只写【图片】，要让人知道这次到底有没有取到内容。
+     * 有缓存描述就显示描述，没有就明确写「本次没取到内容」。
+     */
+    private fun evidenceText(context: ReplyContext, message: ReplyMessage): String {
+        if (!message.placeholder) return message.text
+        // 只有图片和表情会去取图和生成描述；名片、视频、位置本来就不取，别写成「没取到」。
+        if (message.type != 3 && message.type != 47) return message.text
+        val label = ReplyContext.mediaLabel(message.type)
+        val digest = runCatching { ImageDigest.cached(activity, context.talker, message.id) }.getOrNull()
+        return if (!digest.isNullOrBlank()) "【$label：$digest】" else "【$label（本次没取到内容）】"
     }
     private fun openSettings() = runCatching {
         activity.startActivity(Intent().setComponent(ComponentName("dev.jev.wechatmood", "dev.jev.wechatmood.MainActivity"))
@@ -1091,6 +1204,12 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
         openingJob?.cancel(); ownerEpoch = null
         dialog?.dismiss(); job?.cancel(); historyJob?.cancel(); session.cancel()
         talker = null
+        // 目标（尤其是长按的那张图）只属于打开它的聊天，切走后不能留给下一个群。
+        targetFocusId = 0
+        targetImage = null
+        draftTargetMedia = null
+        draftText = ""
+        draftLastIncoming = null
     }
     fun dispose() { hide(); scope.cancel() }
     private fun views(root: View): List<View> = buildList {

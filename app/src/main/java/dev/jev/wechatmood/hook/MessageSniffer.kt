@@ -393,7 +393,8 @@ object MessageSniffer {
         // captureMediaImage 里异步做，避免点开面板时卡一下。
         var focusForReply = focusId
         if (target == null) {
-            val last = messages.lastOrNull { it.isSend == 0 && it.type != 10000 && it.type != 10002 }
+            // messages 按 adapter 从新到旧追加，first 才是对方最后一条；用 last 会取到窗口里最旧的那条。
+            val last = messages.firstOrNull { it.isSend == 0 && it.type != 10000 && it.type != 10002 }
             if (last != null && last.type in setOf(3, 47)) {
                 targetMedia = if (last.type == 3) "图片" else "表情"
                 focusForReply = last.messageId

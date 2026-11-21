@@ -62,9 +62,11 @@ object ImageDigest {
         runCatching {
             val prefs = prefs(context)
             val value = JSONObject().put("text", clean).put("at", System.currentTimeMillis()).toString()
-            val editor = prefs.edit().putString(key(talker, messageId), value)
-            // 旧版本可能存过「看不清」这类无效描述，写新条目时顺手清掉。
+            val current = key(talker, messageId)
+            val editor = prefs.edit().putString(current, value)
+            // 旧版本可能存过「看不清」这类无效描述，写新条目时顺手清掉；当前这条刚写入，别跟着删。
             prefs.all.forEach { (name, raw) ->
+                if (name == current) return@forEach
                 val value = runCatching { JSONObject(raw as String).optString("text") }.getOrNull()
                 if (value != null && !usable(value)) editor.remove(name)
             }

@@ -452,6 +452,14 @@ internal class RelationArchiveUi(private val activity: Activity, private val tal
         }
     }
 
+    /**
+     * 依据消息：本条高亮，前后文按同一条时间线排开。
+     *
+     * 以前把「上下文」拼在正文前面、每条截到 40 字，再用纯文本塞进一个 TextView：
+     * 第一眼看到的是几条没头没尾的短句，真正的依据反而沉在最底下；
+     * 上下文少一条、顺序看着跳，也很难看出到底是不是同一段对话。
+     * 现在时间、说话人、正文分三层，本条带描边和「本条」标记，前后条只做背景。
+     */
     private fun showEvidence(fact: RelationFact) {
         val selected = talker ?: return
         val messageId = fact.sourceChatMessageId
@@ -465,24 +473,112 @@ internal class RelationArchiveUi(private val activity: Activity, private val tal
                 kit.info("依据消息", "这条消息已经不在本机数据库里了（可能被清理过）")
                 return@launch
             }
-            val time = if (message.createdAt > 0) FactTimes.formatLocal(message.createdAt, "MM-dd HH:mm") else "时间未知"
+            val body = message.analysisText() ?: message.evidenceBody()
             // 把读到的真实类型写进日志：用户说那条明明是文字，得能看出到底读成了什么。
-            val extracted = message.analysisText() ?: message.evidenceBody()
-            MoodLog.i("RELATION_EVIDENCE type=" + message.type + " send=" + message.isSend +
-                " len=" + message.content.length + " shown=" + (extracted?.length ?: -1))
-            val body = extracted
-            val kind = message.evidenceKind()
             val nearby = withContext(Dispatchers.IO) {
-                ReplyDatabaseHistory.nearbyText(selected, messageId, snapshot?.account)
+                ReplyDatabaseHistory.nearbyText(selected, messageId, snapshot?.account, limit = 3)
             }
-            val around = if (nearby.isEmpty()) "" else "\n\n上下文：\n" + nearby.joinToString("\n") { item ->
-                val stamp = if (item.createdAt > 0) FactTimes.formatLocal(item.createdAt, "HH:mm") else "--:--"
-                val text = item.plainText()?.replace("\n", " ")?.take(40) ?: "[${item.evidenceKind()}]"
-                "$stamp ${item.speaker()}：$text"
-            }
-            kit.info("依据消息", "${message.speaker()} · $time · $kind${around}\n\n" +
-                (body ?: "【这条被读成$kind，没有可显示的正文】"))
+            MoodLog.i("RELATION_EVIDENCE type=" + message.type + " send=" + message.isSend +
+                " len=" + message.content.length + " shown=" + (body?.length ?: -1) +
+                " nearby=" + nearby.size + " nearText=" + nearby.count { it.plainText() != null })
+            openEvidence(message, body, nearby)
         }
+    }
+
+    /** 依据弹窗：先给一条完整的时间线，再用小字说明这条在其中的位置。 */
+    private fun openEvidence(message: MessageMetadata, body: String?, nearby: List<MessageMetadata>) {
+        val dialog = Dialog(activity).also { addDialog = it }
+        val root = kit.root()
+        val column = kit.content(root)
+        column.addView(kit.heading("依据消息"))
+        val stamp = if (message.createdAt > 0) {
+            FactTimes.formatLocal(message.createdAt, "MM-dd HH:mm")
+        } else "时间未知"
+        column.addView(kit.caption("${message.evidenceKind()} · $stamp · ${message.speaker()}").apply {
+            setPadding(0, theme.dp(4), 0, 0)
+        })
+        if (nearby.isEmpty()) {
+            column.addView(kit.caption("前后没有其他文字消息，只显示这一条").apply {
+                setPadding(0, theme.dp(4), 0, theme.dp(8))
+            })
+        } else {
+            column.addView(kit.sectionLabel("前后文 · 附近 ${nearby.size} 条").apply {
+                setPadding(0, theme.dp(10), 0, theme.dp(2))
+            })
+        }
+        val timeline = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        // 上下文和本条按时间排成一条线；时间缺失的排到最后，不能假装它发生在最前面。
+        val items = (nearby + message).distinctBy { it.messageId }
+            .sortedWith(compareBy({ if (it.createdAt > 0) it.createdAt else Long.MAX_VALUE }, { it.messageId }))
+        var previous = 0L
+        items.forEach { item ->
+            // 相邻两条隔了很久时把空档标出来：不然时间线看起来是一段连续对话，实际不是。
+            if (previous > 0 && item.createdAt > previous + GAP_MS) {
+                timeline.addView(kit.caption("⋯ 相隔 " + gapLabel(item.createdAt - previous)).apply {
+                    setPadding(theme.dp(12), theme.dp(2), 0, 0)
+                })
+            }
+            if (item.createdAt > 0) previous = item.createdAt
+            timeline.addView(evidenceLine(item, item.messageId == message.messageId, body),
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = theme.dp(8) })
+        }
+        val scroll = PanelMaxScroll(activity, (activity.resources.displayMetrics.heightPixels * 0.42f).toInt()).apply {
+            addView(timeline)
+        }
+        column.addView(scroll, LinearLayout.LayoutParams(-1, -2).apply { topMargin = theme.dp(6) })
+        column.addView(theme.action("关闭", primary = true) { dialog.dismiss() },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = theme.dp(10) })
+
+        dialog.setContentView(root)
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setGravity(Gravity.BOTTOM)
+            addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            setDimAmount(ReplyMetrics.DIM)
+        }
+        dialog.setOnShowListener {
+            dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        dialog.show()
+    }
+
+    /** 时间线一行：时间与说话人在上，正文在下；本条描边加粗，前后条压到两行做背景。 */
+    private fun evidenceLine(item: MessageMetadata, current: Boolean, body: String?): View {
+        val row = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(theme.dp(12), theme.dp(9), theme.dp(12), theme.dp(9))
+            background = theme.shape(if (current) theme.surface else theme.card,
+                ReplyMetrics.RADIUS_CARD, if (current) theme.accent else theme.border)
+        }
+        val stamp = if (item.createdAt > 0) {
+            FactTimes.formatLocal(item.createdAt, "MM-dd HH:mm")
+        } else "时间未知"
+        row.addView(theme.label("$stamp · ${item.speaker()}" + if (current) " · 本条" else "",
+            ReplyMetrics.TEXT_CAPTION, if (current) theme.accent else theme.muted, bold = current))
+        // 本条用已解析好的正文（引用、合并转发也能显示）；前后条只认纯文字。
+        val text = if (current) {
+            body?.takeIf { it.isNotBlank() } ?: item.plainText()?.replace("\n", " ")?.takeIf { it.isNotBlank() }
+        } else {
+            item.plainText()?.replace("\n", " ")?.takeIf { it.isNotBlank() }
+        }
+        row.addView(theme.label(
+            text ?: "〔${item.evidenceKind()}，没有可显示的正文〕",
+            ReplyMetrics.TEXT_BODY,
+            if (text == null) theme.muted else theme.ink
+        ).apply {
+            setPadding(0, theme.dp(3), 0, 0)
+            setLineSpacing(theme.dp(2).toFloat(), 1f)
+            if (current) {
+                alpha = 1f
+                setTextIsSelectable(true)
+            } else {
+                // 前后条只做背景，压一点对比度，避免和依据本身抢注意力。
+                alpha = 0.82f
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }
+        })
+        return row
     }
 
     private fun update(fact: RelationFact, status: String) {
@@ -699,7 +795,15 @@ internal class RelationArchiveUi(private val activity: Activity, private val tal
 
     private fun rowParams() = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = theme.dp(8) }
 
+    /** 时间线上的空档提示：分钟、小时、天，不用「很久以前」这种含糊说法。 */
+    private fun gapLabel(gap: Long): String = when {
+        gap < 60 * 60_000L -> "${(gap / 60_000L).coerceAtLeast(1)} 分钟"
+        gap < 24 * 60 * 60_000L -> "${gap / (60 * 60_000L)} 小时"
+        else -> "${gap / (24 * 60 * 60_000L)} 天"
+    }
+
     private companion object {
         const val REMOVED_LIMIT = 6
+        const val GAP_MS = 30 * 60_000L
     }
 }

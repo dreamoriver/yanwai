@@ -58,7 +58,7 @@ object ReplyHistoryReader {
                 return result.copy(source = ReplyContextSource.LOCAL_HISTORY, latestLoadedId = loaded.latestLoadedId,
                     focusMessageId = loaded.focusMessageId, targetMedia = loaded.targetMedia,
                     targetImageDataUri = loaded.targetImageDataUri, targetImageDigest = loaded.targetImageDigest,
-                    focusText = loaded.focusText)
+                    focusText = loaded.focusText, styleTexts = loaded.styleTexts)
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* No raw SQL, account identifier or chat content in diagnostics. */ }
         }

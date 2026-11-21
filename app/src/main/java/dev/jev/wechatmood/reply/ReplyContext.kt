@@ -32,7 +32,9 @@ data class ReplyContext(val talker: String, val messages: List<ReplyMessage>, va
     val targetMedia: String? = null, val targetImageDataUri: String? = null,
     /** 长按图片时由视觉模型生成的一句话描述，按消息缓存，只在这轮提示词里用。 */
     val targetImageDigest: String? = null, val focusText: String? = null,
-    val facts: List<RelationFact> = emptyList()) {
+    val facts: List<RelationFact> = emptyList(),
+    /** 「我」最近的真实文字消息（从旧到新），只给口吻画像用；不含图片/表情/语音占位。 */
+    val styleTexts: List<String> = emptyList()) {
     val fingerprint: String get() {
         val text = messages.joinToString("\u0000") { "${it.id}:${it.speaker.length}:${it.speaker}:${it.time}:${it.text.length}:${it.text}:${it.voice?.key.orEmpty()}:${it.voiceState}" }
         return MessageDigest.getInstance("SHA-256").digest("$talker:$latestLoadedId:${background.revision}:$text".toByteArray())

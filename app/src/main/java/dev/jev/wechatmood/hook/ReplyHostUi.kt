@@ -108,12 +108,24 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
     }
 
     fun open(focusMessageId: Long? = null, imageDataUri: String? = null, autoTopics: Boolean = false): Boolean {
+        MoodLog.i("REPLY_OPEN_ENTER focus=${focusMessageId ?: 0} knownTalker=${talker != null} " +
+            "dialog=${dialog?.isShowing == true} visible=${dialog?.window?.decorView?.isShown == true} " +
+            "opening=${openingJob?.isActive == true}")
         targetFocusId = focusMessageId ?: 0
         targetImage = imageDataUri
         autoTarget = focusMessageId == null
         val selectedTalker = talker ?: return false
-        if (MessageSniffer.currentReplyTalker() != selectedTalker) return false
-        if (dialog?.isShowing == true || openingJob?.isActive == true) return true
+        // 附加面板关闭的瞬间 ChatFooter 可能读不到聊天：读到不同聊天才拒绝，读不到就继续，
+        // 后面读到 live.talker 时还会再核对一次。否则第一次点「帮我回」会静默无反应。
+        val current = MessageSniffer.currentReplyTalker()
+        if (current != null && current != selectedTalker) {
+            MoodLog.i("REPLY_OPEN_REJECT reason=talker_mismatch")
+            return false
+        }
+        if (dialog?.isShowing == true || openingJob?.isActive == true) {
+            MoodLog.i("REPLY_OPEN_SKIP showing=${dialog?.isShowing == true} opening=${openingJob?.isActive == true}")
+            return true
+        }
         val epoch = ReplyDatabaseHistory.pendingAccountScope()
         ownerEpoch = epoch
         val live = runCatching { MessageSniffer.replyContext(requireBottom = false, focusId = targetFocusId) }.getOrElse {
@@ -128,7 +140,11 @@ class ReplyHostUi(private val activity: Activity, createAnalysisControl: () -> V
                 MoodLog.i("REPLY_AUTO_TARGET ready=${target.id > 0} placeholder=${target.placeholder}")
             }
         }
-        if (live.talker != selectedTalker) return false
+        if (live.talker != selectedTalker) {
+            MoodLog.i("REPLY_OPEN_REJECT reason=live_mismatch")
+            toast("聊天已切换，请重新打开")
+            return false
+        }
         openingJob = scope.launch {
             try {
                 // A cold host may not have finished connecting yet. Load before capturing ownership.

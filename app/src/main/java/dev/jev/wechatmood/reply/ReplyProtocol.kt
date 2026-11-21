@@ -64,10 +64,11 @@ object ReplyProtocol {
                 ?.let { "；另外单独看图得到的一句描述是：$it" }.orEmpty()
             if (context.targetImageDataUri != null)
                 "\n对方本轮发来${name}，内容已随消息附上${seen}；先判断它表达的情绪（玩笑、撒娇、阴阳、认真、安慰等），" +
-                    "再按对应情绪取用上面的通用原则。不要复述识别过程，也不要提已附图、测试这类系统措辞。"
+                    "再按对应情绪取用上面的通用原则。不要复述识别过程，也不要提已附图、测试这类系统措辞。" +
+                    "回复的语气、句长和标点仍按 my_style 与 my_style_samples，不要因为对方发的是${name}就换成书面语。"
             else
                 "\n对方本轮发来${name}，但这次没取到内容，只能按上下文判断；不要编造${media}里是什么，" +
-                    "需要时可以顺着文字内容自然回应，或简短确认。"
+                    "需要时可以顺着文字内容自然回应，或简短确认；语气、句长和标点仍按 my_style 与 my_style_samples。"
         }.orEmpty()
         val image = context.targetImageDataUri
         val userMessage = if (image != null) JSONObject().put("role", "user").put("content", JSONArray()
@@ -87,8 +88,15 @@ object ReplyProtocol {
         focusMessageId: Long? = null, relationship: ReplyRelationship = ReplyRelationship.UNSPECIFIED,
         customRelationship: String = ""): JSONObject {
         val custom = relationship.customValue(customRelationship)
-        // 口吻画像：纯本地统计，命中缓存时不重复计算。
-        val style = StyleProfileCache.of(context.talker, context.messages)
+        // 口吻画像：优先用库里最近的真实文字（不受本次参考条数限制）；库里取不到才退回上下文里的文字。
+        val mineStyle = context.styleTexts.ifEmpty {
+            context.messages.filter { it.speaker == "我" && !it.placeholder && !it.text.startsWith("【") }.map { it.text }
+        }
+        val style = StyleProfileCache.ofTexts(context.talker, mineStyle)
+        // 只记条数与比例，不记正文：用来核对媒体/转发场景下口吻画像到底有没有生效。
+        dev.jev.wechatmood.core.MoodLog.i("REPLY_STYLE texts=${mineStyle.size} profile=${style != null} " +
+            "samples=${style?.samples?.size ?: 0} " +
+            "period=${style?.periodRate?.let { String.format(java.util.Locale.US, "%.2f", it) } ?: "-"}")
         require(context.messages.none { it.voiceState == VoiceState.WAITING }) { "语音尚未完成转写" }
         require(relationship != ReplyRelationship.OTHER || custom.isNotBlank()) { "请先填写对方身份" }
         return JSONObject().put("messages", JSONArray(context.messages.map {
@@ -98,7 +106,7 @@ object ReplyProtocol {
             .put("previous_suggestion", previous.take(2000)).put("focus_message_id", focusMessageId ?: JSONObject.NULL)
             .put("my_style", style?.summary() ?: JSONObject.NULL)
             .put("my_style_samples", JSONArray(style?.samples?.takeIf { it.isNotEmpty() }
-                ?: context.messages.filter { it.speaker == "我" }.takeLast(6).map { it.text.take(60) }))
+                ?: mineStyle.map { it.trim() }.filter { it.isNotEmpty() }.takeLast(6).map { it.take(60) }))
             .put("reply_target", if (context.targetMedia != null) JSONObject().put("id", context.focusMessageId)
                 .put("speaker", "对方").put("type", "media").put("media", context.targetMedia)
                 .put("note", "对方发来" + if (context.targetMedia == "表情") "一个表情" else "一张${context.targetMedia}")
@@ -106,7 +114,8 @@ object ReplyProtocol {
                 val obj = JSONObject().put("id", target.id).put("speaker", target.speaker).put("text", target.text)
                 // 长按的是合并转发：这段文本是本地摊平出来的，得明确告诉模型回的是什么。
                 if (target.text.startsWith("【合并转发")) {
-                    obj.put("type", "forward").put("note", "对方发来一段聊天记录，本轮要接住这段记录里的内容与情绪")
+                    obj.put("type", "forward").put("note", "对方发来一段聊天记录，本轮要接住这段记录里的内容与情绪；" +
+                        "语气、句长与标点仍按 my_style，不要写成总结或书面语")
                 }
                 obj
             } ?: context.focusText?.takeIf { it.isNotBlank() }?.let { text ->

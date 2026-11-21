@@ -103,8 +103,13 @@ internal class ReplyPlusRow(private val activity: Activity, private val createAn
         row.addView(createAnalysisControl(), LinearLayout.LayoutParams(-2, -1))
         row.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
         row.addView(theme.action("帮我回 · 找话题", quiet = true) {
-            if (panel === found && found.isShown && found.isAttachedToWindow) {
+            // 刚展开/切聊天时 AppPanel 可能还在动画里，isShown 和 isAttachedToWindow 会瞬时为 false。
+            // 以前这里直接忽略点击，第一次点会像没反应；只要还是我们挂的面板就允许打开。
+            if (panel === found) {
                 runCatching(open).onFailure { MoodLog.w("REPLY_PLUS_OPEN_FAILED " + it.javaClass.simpleName) }
+            } else {
+                MoodLog.i("REPLY_PLUS_ENTRY_IGNORED shown=${found.isShown} attached=${found.isAttachedToWindow}")
+                requestRefresh()
             }
         }, LinearLayout.LayoutParams(-2, -1))
         val host = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }

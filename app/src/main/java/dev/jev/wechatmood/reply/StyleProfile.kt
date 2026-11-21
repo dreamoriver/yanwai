@@ -54,11 +54,16 @@ object StyleAnalyzer {
     private val PARTICLES = listOf("嗯", "啊", "呀", "哈", "嘛", "哦", "昂", "诶", "唉", "嘿", "啦", "咯", "呗", "嗷", "嘞", "哟", "唉", "哇")
     private const val MIN_MESSAGES = 8
     private const val MAX_SAMPLE_LENGTH = 24
+    /** 媒体与引用占位不是我说的话：拿它们统计，会以为我的习惯是「一条 4 个字、没有标点」。 */
+    private val PLACEHOLDER = Regex("^【(图片|表情|语音[^】]*|合并转发[^】]*|名片|视频|小视频|位置|类型\\d+)】")
 
-    fun analyze(messages: List<ReplyMessage>): StyleProfile? {
-        val mine = messages.filter { it.speaker == "我" }
-            .map { it.text.trim() }
-            .filter { it.isNotEmpty() && it.length <= 200 && !it.startsWith("【引用") }
+    fun analyze(messages: List<ReplyMessage>): StyleProfile? =
+        analyzeTexts(messages.filter { it.speaker == "我" }.map { it.text })
+
+    /** 只看真实文字；图片/表情/语音/合并转发的占位和引用占位都不进统计与样例。 */
+    fun analyzeTexts(texts: List<String>): StyleProfile? {
+        val mine = texts.map { it.trim() }
+            .filter { it.isNotEmpty() && it.length <= 200 && !it.startsWith("【引用") && !PLACEHOLDER.containsMatchIn(it) }
         if (mine.size < MIN_MESSAGES) return null
         val lengths = mine.map { it.codePointCount(0, it.length) }.sorted()
         val median = lengths[lengths.size / 2]
@@ -115,15 +120,18 @@ object StyleProfileCache {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry>) = size > LIMIT
     }
 
-    fun of(talker: String, messages: List<ReplyMessage>): StyleProfile? {
+    fun of(talker: String, messages: List<ReplyMessage>): StyleProfile? =
+        ofTexts(talker, messages.filter { it.speaker == "我" }.map { it.text })
+
+    fun ofTexts(talker: String, texts: List<String>): StyleProfile? {
         if (talker.isBlank()) return null
-        val mine = messages.count { it.speaker == "我" }
-        val lastId = messages.lastOrNull { it.speaker == "我" }?.id ?: 0
+        val mine = texts.filter { it.isNotBlank() }
+        val lastId = mine.lastOrNull()?.hashCode()?.toLong() ?: 0
         synchronized(cache) {
-            cache[talker]?.let { if (it.size == mine && it.lastId == lastId) return it.profile }
+            cache[talker]?.let { if (it.size == mine.size && it.lastId == lastId) return it.profile }
         }
-        val profile = StyleAnalyzer.analyze(messages)
-        synchronized(cache) { cache[talker] = Entry(mine, lastId, profile) }
+        val profile = StyleAnalyzer.analyzeTexts(mine)
+        synchronized(cache) { cache[talker] = Entry(mine.size, lastId, profile) }
         return profile
     }
 

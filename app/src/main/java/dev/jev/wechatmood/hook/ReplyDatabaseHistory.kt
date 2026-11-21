@@ -437,8 +437,31 @@ object ReplyDatabaseHistory {
             val renamed = named.messages.zip(read.messages).count { (after, before) -> after.speaker != before.speaker }
             MoodLog.i("REPLY_NAMES_RESULT requested=$limit count=${named.messages.size} " +
                 "renamed=$renamed account=${scope != null}")
-            named
+            // 口吻画像要用更长的历史，不能只看本次参考的十几条：单独取「我」最近的真实文字。
+            val styleScope = scope ?: replyAccount(read)
+            named.copy(styleTexts = readStyleTexts(read.talker, databases, styleScope))
         }
+    }
+
+    /**
+     * 「我」最近的真实文字消息，只给口吻画像用。图片/表情/语音占位和卡片不算：
+     * 拿它们统计会让画像以为我「一条只发四个字」，媒体多的聊天里口吻描述直接失真。
+     */
+    private fun readStyleTexts(talker: String, databases: List<Any>, scope: String?): List<String> {
+        for (db in databasesForScope(databases, scope)) {
+            val texts = runCatching {
+                query(db, "SELECT content FROM message WHERE talker = ? AND isSend = 1 AND type = 1 " +
+                    "AND length(trim(content)) > 0 ORDER BY msgId DESC LIMIT 200", arrayOf(talker)).use { cursor ->
+                    buildList {
+                        while (cursor.moveToNext()) {
+                            cursor.getString(0)?.trim()?.takeIf { it.isNotEmpty() }?.let(::add)
+                        }
+                    }
+                }
+            }.getOrNull()
+            if (!texts.isNullOrEmpty()) return texts.asReversed()
+        }
+        return emptyList()
     }
 
     /**

@@ -70,6 +70,7 @@ internal class FeaturePanel(
         if (factsAvailable) {
             row("关系档案", "整理过的事实，可移出或补一条", onFacts)
             row("待办", "带时间的约定与重要日期", onTodos)
+            row("关系总览", "所有会话的待办按到期时间排", { RelationOverviewUi(activity).show() })
         }
         body.addView(group, LinearLayout.LayoutParams(-1, -2))
 
